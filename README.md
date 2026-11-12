@@ -100,7 +100,7 @@ kycpseudo run      --in data/synthetic/images --out runs/demo --demo-keys
 kycpseudo evaluate --truth data/synthetic/truth.json --run runs/demo --demo-keys
 kycpseudo reveal   --run runs/demo --entity P-0003 --demo-keys   # key holder only
 
-pytest            # 40 tests; add -m "not slow" to skip the end-to-end run
+pytest            # 43 tests; add -m "not slow" to skip the end-to-end and engine runs
 ```
 
 `--demo-keys` creates throwaway keys in `.keys/`. For real use, set `KYCPSEUDO_HMAC_KEY` (base64, 32 bytes) and `KYCPSEUDO_VAULT_KEY` (a Fernet key) from a key management service, and keep the vault and keys apart from the released corpus.
@@ -116,6 +116,10 @@ runs/demo/
   run_summary.json
 ```
 
+## Web app
+
+The engine runs as a Hugging Face Docker Space (`deploy/engine/`, FastAPI and Tesseract) and the frontend on Streamlit Community Cloud (`deploy/frontend/`). Anyone can try it on the synthetic samples or their own uploads; public outputs are **watermarked** and use throwaway keys. Clean output needs the operator's access token. Setup steps are in [deploy/README.md](deploy/README.md).
+
 ## Repository layout
 
 ```
@@ -126,8 +130,11 @@ src/kycpseudo/
   bm25.py       BM25 over character n-grams, with explain()
   names.py      normalisation, name similarity, pattern-preserving formatting
   evaluate.py   independent scoring against ground truth
+  watermark.py  visible marking for public outputs
   synth/        synthetic corpus generator
-tests/          MRZ, FF1 (NIST vectors), BM25, resolution, surrogates, rendering, end to end
+tests/          MRZ, FF1 (NIST vectors), BM25, resolution, surrogates, rendering, engine, end to end
+deploy/engine/    FastAPI engine + Dockerfile for a Hugging Face Space
+deploy/frontend/  Streamlit app
 ```
 
 ## Known limits and next steps
