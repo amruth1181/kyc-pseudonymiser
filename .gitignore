@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+
+# Secrets: never commit keys or the re-identification vault
+.keys/
+*.key
+vault.enc
+
+# Generated data and run outputs
+data/
+runs/
+!src/kycpseudo/data/
