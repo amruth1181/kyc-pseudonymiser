@@ -23,7 +23,7 @@ dependencies = [
 pdf = ["pypdfium2>=4"]
 lama = ["simple-lama-inpainting>=0.1"]
 presidio = ["presidio-analyzer>=2.2"]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "fastapi>=0.110", "python-multipart", "httpx"]
 
 [project.scripts]
 kycpseudo = "kycpseudo.cli:main"
@@ -37,4 +37,4 @@ kycpseudo = ["data/*.json"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-markers = ["slow: end-to-end run on a small synthetic corpus (about a minute)"]
+markers = ["slow: runs the full pipeline (end-to-end and engine tests, a few minutes)"]
