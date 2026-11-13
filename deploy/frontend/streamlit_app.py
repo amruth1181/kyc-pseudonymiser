@@ -1,58 +1,90 @@
-"""kycpseudo: Streamlit frontend.
+"""kycpseudo: Streamlit app.
 
-Sends scans to the engine (a Hugging Face Space) and shows each page before
-and after pseudonymisation. Configure the engine address in Streamlit secrets:
+Runs the whole pipeline inside the app (no separate engine) and shows each page
+before and after pseudonymisation. Deploys on Streamlit Community Cloud as is:
+Tesseract comes from packages.txt at the repository root, Python packages from
+requirements.txt next to this file.
 
-    ENGINE_URL = "https://<user>-kycpseudo-engine.hf.space"
+Optional Streamlit secrets (see .streamlit/secrets.toml.example):
 
-The access token is typed by the person using the app, never stored in
-secrets: anyone without it gets the public, watermarked demo.
+    ENGINE_TOKEN          access token for clean output
+    KYCPSEUDO_HMAC_KEY    base64 32-byte key for surrogates (token holders)
+    KYCPSEUDO_VAULT_KEY   Fernet key for the vault (token holders)
+
+Without the token a visitor gets the public demo: watermarked output and
+throwaway keys. The token is typed into the sidebar, so only its holder gets
+clean output.
 """
 from __future__ import annotations
 
 import base64
 import io
 import os
+import sys
+import tempfile
+import threading
+import time
 import zipfile
+from pathlib import Path
 
-import requests
 import streamlit as st
+
+# Use the library from this repository checkout, so the app always matches the code beside it.
+_SRC = Path(__file__).resolve().parents[2] / "src"
+if _SRC.is_dir() and str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from kycpseudo import service  # noqa: E402
 
 st.set_page_config(page_title="kycpseudo: KYC document pseudonymisation", page_icon="🪪", layout="wide")
 
 
-def engine_url() -> str:
+def setting(name: str, default: str = "") -> str:
+    """A value from Streamlit secrets, falling back to the environment."""
     try:
-        return st.secrets["ENGINE_URL"].rstrip("/")
+        return str(st.secrets[name])
     except Exception:
-        return os.environ.get("ENGINE_URL", "http://localhost:7860").rstrip("/")
+        return os.environ.get(name, default)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def list_samples(url: str) -> list[str]:
-    r = requests.get(f"{url}/samples", timeout=120)
-    r.raise_for_status()
-    return r.json()
+MAX_FILES = int(setting("MAX_FILES", "8"))
+MAX_FILE_MB = int(setting("MAX_FILE_MB", "8"))
+PUBLIC_PER_HOUR = int(setting("PUBLIC_REQUESTS_PER_HOUR", "20"))
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_sample(url: str, name: str) -> bytes:
-    r = requests.get(f"{url}/samples/{name}", timeout=120)
-    r.raise_for_status()
-    return r.content
+@st.cache_resource(show_spinner="Preparing sample documents...")
+def samples_dir() -> Path:
+    return service.make_samples(Path(tempfile.gettempdir()) / "kyc-samples")
 
 
-def call_engine(url: str, files: list[tuple[str, bytes]], token: str) -> dict:
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    payload = [("files", (name, data, "application/octet-stream")) for name, data in files]
-    r = requests.post(f"{url}/pseudonymise", files=payload, headers=headers, timeout=900)
-    if r.status_code != 200:
-        try:
-            detail = r.json().get("detail", r.text)
-        except Exception:
-            detail = r.text
-        raise RuntimeError(f"Engine returned {r.status_code}: {detail}")
-    return r.json()
+@st.cache_resource
+def pipeline_lock() -> threading.Lock:
+    """One pipeline run at a time across all visitors, to stay inside the host's memory."""
+    return threading.Lock()
+
+
+@st.cache_data(show_spinner=False)
+def get_sample(name: str) -> bytes:
+    return (samples_dir() / Path(name).name).read_bytes()
+
+
+def allow_public_run() -> bool:
+    """Per-visitor hourly limit for runs without a token."""
+    now = time.time()
+    hits = [t for t in st.session_state.get("hits", []) if now - t < 3600]
+    allowed = len(hits) < PUBLIC_PER_HOUR
+    if allowed:
+        hits.append(now)
+    st.session_state["hits"] = hits
+    return allowed
+
+
+def pseudonymise(files: list[tuple[str, bytes]], operator: bool) -> dict:
+    with pipeline_lock():
+        return service.process(files, operator,
+                               hmac_key_b64=setting("KYCPSEUDO_HMAC_KEY") or None,
+                               vault_key=setting("KYCPSEUDO_VAULT_KEY") or None,
+                               max_files=MAX_FILES, max_bytes=MAX_FILE_MB * 1024 * 1024)
 
 
 FIELD_LABELS = {
@@ -62,19 +94,17 @@ FIELD_LABELS = {
 }
 
 # ------------------------------------------------------------------ sidebar
-url = engine_url()
 with st.sidebar:
     st.header("Settings")
     token = st.text_input("Access token (optional)", type="password",
                           help="Without a token you get the public demo: outputs are watermarked and "
                                "pseudonyms change on every run. The token returns clean output.")
-    st.caption(f"Engine: `{url}`")
-    try:
-        health = requests.get(f"{url}/health", timeout=60).json()
-        st.success("Engine online")
-        st.caption(f"Up to {health['max_files']} files, {health['max_file_mb']} MB each.")
-    except Exception:
-        st.warning("Engine not reachable yet. A sleeping Hugging Face Space can take a minute to wake up.")
+    operator = service.token_matches(token, setting("ENGINE_TOKEN"))
+    if operator:
+        st.success("Token accepted: clean output.")
+    elif token:
+        st.error("Token not recognised: public demo mode.")
+    st.caption(f"Up to {MAX_FILES} files, {MAX_FILE_MB} MB each.")
     st.divider()
     st.markdown("[Source on GitHub](https://github.com/amruth1181/kyc-pseudonymiser)")
 
@@ -105,23 +135,19 @@ files: list[tuple[str, bytes]] = []
 with tab_samples:
     st.caption("Fictional people from the fictional state of Utopia. Pick documents belonging to the same "
                "person to see one pseudonym carried across them.")
-    try:
-        names = list_samples(url)
-        chosen = st.multiselect("Documents", names, default=names[:3], max_selections=8)
-        if chosen:
-            cols = st.columns(min(len(chosen), 4))
-            for i, name in enumerate(chosen):
-                cols[i % len(cols)].image(get_sample(url, name), caption=name, width="stretch")
-        sample_files = [(n, get_sample(url, n)) for n in chosen]
-    except Exception:
-        sample_files = []
-        st.info("Samples load once the engine is online.")
+    names = sorted(p.name for p in samples_dir().glob("*.png"))
+    chosen = st.multiselect("Documents", names, default=names[:3], max_selections=MAX_FILES)
+    if chosen:
+        cols = st.columns(min(len(chosen), 4))
+        for i, name in enumerate(chosen):
+            cols[i % len(cols)].image(get_sample(name), caption=name, width="stretch")
+    sample_files = [(n, get_sample(n)) for n in chosen]
     if st.button("Pseudonymise samples", type="primary", disabled=not sample_files):
         files = sample_files
 
 with tab_upload:
-    st.warning("Upload only documents you are entitled to process. Files are processed in memory on the "
-               "engine and are not stored. Without an access token, results are watermarked.")
+    st.warning("Upload only documents you are entitled to process. Files are processed in a temporary "
+               "folder that is deleted straight away; nothing is stored. Without an access token, results are watermarked.")
     uploads = st.file_uploader("Scans (PNG, JPG, TIFF or PDF)", type=["png", "jpg", "jpeg", "tif", "tiff", "pdf"],
                                accept_multiple_files=True)
     if st.button("Pseudonymise uploads", type="primary", disabled=not uploads):
@@ -131,9 +157,11 @@ with tab_upload:
 if files:
     with st.spinner(f"Processing {len(files)} document(s). This takes about 5-10 seconds per page."):
         try:
-            st.session_state["result"] = call_engine(url, files, token.strip())
+            if not operator and not allow_public_run():
+                raise service.ServiceError(429, f"Limit of {PUBLIC_PER_HOUR} runs per hour reached. Try again later.")
+            st.session_state["result"] = pseudonymise(files, operator)
             st.session_state["inputs"] = dict(files)
-        except Exception as e:
+        except service.ServiceError as e:
             st.error(str(e))
 
 res = st.session_state.get("result")

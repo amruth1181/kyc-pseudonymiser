@@ -1,2 +1,10 @@
+# The app imports kycpseudo straight from this repository's src/ folder,
+# so these are the library's own dependencies plus Streamlit.
 streamlit>=1.40
-requests>=2.31
+numpy>=1.24
+opencv-python-headless>=4.8
+pillow>=10
+pytesseract>=0.3.10
+rapidfuzz>=3
+cryptography>=41
+pypdfium2>=4
