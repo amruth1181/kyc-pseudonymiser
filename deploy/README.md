@@ -1,71 +1,67 @@
-# Deployment: engine on Hugging Face, frontend on Streamlit
+# Deployment: Streamlit Community Cloud
 
 ```
- Browser ──> Streamlit Community Cloud ──HTTPS──> Hugging Face Docker Space
-             deploy/frontend/                     deploy/engine/
-             upload, token box, results           FastAPI + Tesseract + kycpseudo
+ Browser ──> Streamlit Community Cloud
+             deploy/frontend/streamlit_app.py
+             upload, token box, results, and the whole pipeline (Tesseract + kycpseudo)
 ```
 
-The frontend is thin: it sends files and shows results. The engine does all the work and holds the keys.
+The Streamlit app runs the pipeline itself, so one free deployment is all it needs. It imports `kycpseudo` straight from `src/` in this repository, so the live app always matches the code on the deployed branch.
 
 ## Access model
 
-| Caller | Output | Keys used | Vault returned |
+| Visitor | Output | Keys used | Vault returned |
 | --- | --- | --- | --- |
-| No token (public) | Watermarked across the page, red banner | Fresh random keys per request: pseudonyms change every run and cannot be reversed | No |
-| `Authorization: Bearer <ENGINE_TOKEN>` | Clean | Your persistent keys: the same person always gets the same pseudonym | Yes, encrypted |
+| No token (public) | Watermarked across the page, red banner | Fresh random keys per run: pseudonyms change every run and cannot be reversed | No |
+| Types `ENGINE_TOKEN` in the sidebar | Clean | Your persistent keys: the same person always gets the same pseudonym | Yes, encrypted, in the download |
 
-Public requests are also rate-limited (20 per hour per IP by default). Uploads are processed in a temporary directory that is deleted before the response is sent; nothing is stored or logged except counts and timings. Uploaded filenames are never reused, because scan filenames often contain the customer's name.
+Public runs are limited to 20 per hour per browser session, and only one run executes at a time across all visitors. Uploads are processed in a temporary directory that is deleted before the result is shown; nothing is stored. Uploaded filenames are never reused, because scan filenames often contain the customer's name.
 
-## 1. Push the library to GitHub
+## Deploy
 
-The engine's Dockerfile installs `kycpseudo` from `github.com/amruth1181/kyc-pseudonymiser`, so the repo must be public on GitHub first.
-
-## 2. Create the engine Space on Hugging Face
-
-1. huggingface.co → New Space → name `kycpseudo-engine`, SDK **Docker**, hardware **CPU basic** (free), visibility **Public**.
-2. Put the three files from `deploy/engine/` at the root of the Space repo:
-   ```bash
-   git clone https://huggingface.co/spaces/<hf-user>/kycpseudo-engine
-   cp deploy/engine/{Dockerfile,app.py,README.md} kycpseudo-engine/
-   cd kycpseudo-engine && git add . && git commit -m "Add kycpseudo engine" && git push
+1. Push this repository to GitHub (`amruth1181/kyc-pseudonymiser`).
+2. share.streamlit.io → **Create app** → from GitHub: repo `amruth1181/kyc-pseudonymiser`, branch `main`, main file `deploy/frontend/streamlit_app.py`.
+3. Advanced settings → Python **3.12**, and paste three **Secrets**:
+   ```toml
+   ENGINE_TOKEN = "..."
+   KYCPSEUDO_HMAC_KEY = "..."
+   KYCPSEUDO_VAULT_KEY = "..."
    ```
-3. Space → Settings → **Variables and secrets** → add three secrets:
+   Generate the values with:
    ```bash
    # ENGINE_TOKEN: your access token (keep it private)
-   python -c "import secrets; print(secrets.token_urlsafe(32))"
+   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
    # KYCPSEUDO_HMAC_KEY: derives every surrogate
-   python -c "import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
-   # KYCPSEUDO_VAULT_KEY: encrypts the vault
-   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   python3 -c "import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+   # KYCPSEUDO_VAULT_KEY: encrypts the vault (any 32 random bytes, url-safe base64)
+   python3 -c "import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
    ```
-   Store the HMAC and vault keys somewhere safe too. Losing the HMAC key breaks consistency with earlier runs; losing the vault key makes vaults unreadable.
-4. Wait for the build (about 3-5 minutes), then open `https://<hf-user>-kycpseudo-engine.hf.space/health`. It should report `"token_configured": true`. Interactive API docs are at `/docs`.
+   Store the HMAC and vault keys somewhere safe too. Losing the HMAC key breaks consistency with earlier runs; losing the vault key makes vaults unreadable. The secrets are optional: without them the app runs as the public demo only.
+4. Deploy. Streamlit installs Tesseract from `packages.txt` at the repository root and the Python packages from `deploy/frontend/requirements.txt`.
 
-Optional variables: `MAX_FILES` (default 8), `MAX_FILE_MB` (8), `PUBLIC_REQUESTS_PER_HOUR` (20).
+Optional secrets: `MAX_FILES` (default 8), `MAX_FILE_MB` (8), `PUBLIC_REQUESTS_PER_HOUR` (20).
 
-## 3. Deploy the frontend on Streamlit Community Cloud
-
-1. share.streamlit.io → **Create app** → from GitHub: repo `amruth1181/kyc-pseudonymiser`, branch `main`, main file `deploy/frontend/streamlit_app.py`.
-2. Advanced settings → **Secrets**:
-   ```toml
-   ENGINE_URL = "https://<hf-user>-kycpseudo-engine.hf.space"
-   ```
-   Do **not** put `ENGINE_TOKEN` in the Streamlit secrets: every visitor would then get clean output. The token is typed into the app's sidebar by whoever holds it.
-3. Deploy. Streamlit installs `deploy/frontend/requirements.txt` (streamlit, requests only).
-
-## Run both locally
+## Run locally
 
 ```bash
-pip install -e ".[pdf]" fastapi "uvicorn[standard]" python-multipart streamlit requests
-# engine
-cd deploy/engine && ENGINE_TOKEN=dev-token uvicorn app:app --port 7860
-# frontend, in another terminal
-ENGINE_URL=http://localhost:7860 streamlit run deploy/frontend/streamlit_app.py
+brew install tesseract            # or: apt-get install tesseract-ocr
+pip install -r deploy/frontend/requirements.txt
+ENGINE_TOKEN=dev-token streamlit run deploy/frontend/streamlit_app.py
 ```
+
+## Optional: the HTTP engine
+
+`deploy/engine/` holds the same service as a FastAPI app with a Dockerfile, for when other programs need to call it over HTTP. It suits any Docker host; on Hugging Face, Docker Spaces need a paid plan. The Streamlit app does not use it.
+
+```bash
+pip install -e ".[pdf]" fastapi "uvicorn[standard]" python-multipart
+cd deploy/engine && ENGINE_TOKEN=dev-token uvicorn app:app --port 7860
+```
+
+It reads the same `ENGINE_TOKEN`, `KYCPSEUDO_HMAC_KEY` and `KYCPSEUDO_VAULT_KEY` from the environment, takes the token as `Authorization: Bearer <ENGINE_TOKEN>`, and rate-limits public requests per IP.
 
 ## Operating notes
 
-- **Speed:** about 5-10 seconds per page on the free CPU Space. A sleeping Space takes about a minute to wake on the first request.
-- **Reproducible builds:** build with `--build-arg KYCPSEUDO_REF=<tag or commit>` (set it as a Space variable) instead of tracking `main`.
-- **Real documents:** the detection rules are tuned to the synthetic templates. Before using real KYC scans, add layout rules for those document types, and run the engine as a private Space inside an approved environment.
+- **Speed:** about 10 seconds per page. An app that has gone to sleep takes a moment to wake on the first visit.
+- **Memory:** the free tier is small, which is why runs are queued one at a time. It suits a demo, not bulk processing.
+- **Real documents:** the detection rules are tuned to the synthetic templates. Before using real KYC scans, add layout rules for those document types, and run the service inside an approved, private environment.

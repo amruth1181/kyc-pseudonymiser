@@ -118,7 +118,7 @@ runs/demo/
 
 ## Web app
 
-The engine runs as a Hugging Face Docker Space (`deploy/engine/`, FastAPI and Tesseract) and the frontend on Streamlit Community Cloud (`deploy/frontend/`). Anyone can try it on the synthetic samples or their own uploads; public outputs are **watermarked** and use throwaway keys. Clean output needs the operator's access token. Setup steps are in [deploy/README.md](deploy/README.md).
+The whole pipeline runs inside a Streamlit app on Streamlit Community Cloud (`deploy/frontend/`). Anyone can try it on the synthetic samples or their own uploads; public outputs are **watermarked** and use throwaway keys. Clean output needs the operator's access token. The same service is also available as a FastAPI engine with a Dockerfile (`deploy/engine/`). Setup steps are in [deploy/README.md](deploy/README.md).
 
 ## Repository layout
 
@@ -131,10 +131,12 @@ src/kycpseudo/
   names.py      normalisation, name similarity, pattern-preserving formatting
   evaluate.py   independent scoring against ground truth
   watermark.py  visible marking for public outputs
+  service.py    one-call service with the public/operator access model
   synth/        synthetic corpus generator
 tests/          MRZ, FF1 (NIST vectors), BM25, resolution, surrogates, rendering, engine, end to end
-deploy/engine/    FastAPI engine + Dockerfile for a Hugging Face Space
-deploy/frontend/  Streamlit app
+deploy/frontend/  Streamlit app (runs the pipeline itself)
+deploy/engine/    optional FastAPI engine + Dockerfile
+packages.txt      system packages for Streamlit Community Cloud
 ```
 
 ## Known limits and next steps
