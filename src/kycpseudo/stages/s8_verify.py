@@ -132,15 +132,20 @@ def verify(original: np.ndarray, output: np.ndarray, rec: PageRecord, cfg: Confi
     out_tokens = {t for w in out_words for t in vnorm(w.text).split()}
     allowed = {t for f in rec.fields if f.surrogate for t in vnorm(f.surrogate).split()}
     pii_tokens = {t for f in rec.fields for t in vnorm(f.value).split()}
+    # What a validated MRZ says about the holder must be gone even where no detector found it.
+    known = [(f.ftype, f.value) for f in rec.fields]
+    if rec.mrz and rec.mrz.valid:
+        known += [("mrz_value", v) for v in (rec.mrz.surname, rec.mrz.given_names, rec.mrz.doc_number) if v]
+    pii_tokens |= {t for _, v in known for t in vnorm(v).split()}
     page_text_tokens = {t for w in rec.words for t in vnorm(w.text).split()}
     allowed |= page_text_tokens - pii_tokens          # labels, headings, kept fields
-    for f in rec.fields:
-        for tok in set(vnorm(f.value).split()):
+    for ftype, value in known:
+        for tok in set(vnorm(value).split()):
             if len(tok) < 3 or tok in allowed:
                 continue
             for ot in out_tokens:
                 if abs(len(ot) - len(tok)) <= 2 and fuzz.ratio(ot, tok) >= cfg.leak_ratio and ot not in allowed:
-                    res["leaks"].append({"field": f.ftype, "token_len": len(tok)})
+                    res["leaks"].append({"field": ftype, "token_len": len(tok)})
                     break
     res["page_text"] = " ".join(text_of(l) for l in build_lines(out_words))
 
