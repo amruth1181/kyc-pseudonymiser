@@ -64,4 +64,4 @@ It reads the same `ENGINE_TOKEN`, `KYCPSEUDO_HMAC_KEY` and `KYCPSEUDO_VAULT_KEY`
 
 - **Speed:** about 10 seconds per page. An app that has gone to sleep takes a moment to wake on the first visit.
 - **Memory:** the free tier is small, which is why runs are queued one at a time. It suits a demo, not bulk processing.
-- **Real documents:** the detection rules are tuned to the synthetic templates. Before using real KYC scans, add layout rules for those document types, and run the service inside an approved, private environment.
+- **Real documents:** the detection rules are tuned to the synthetic templates, with extra handling for bilingual passport layouts. Before using real KYC scans, add layout rules for those document types, and run the service inside an approved, private environment.

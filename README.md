@@ -144,7 +144,8 @@ packages.txt      system packages for Streamlit Community Cloud
 - **OCR engine:** Tesseract is the default because it installs anywhere. PaddleOCR (PP-OCRv5, Apache 2.0) is the production choice and plugs in behind `ocr.read_words`.
 - **Faces:** the photo is replaced with a procedural placeholder per entity. A synthetic face generator, one face per entity, belongs in `render_region`.
 - **Barcodes, PDF417 and QR codes** are not yet decoded and rebuilt.
-- **Fonts:** real deployments need a font registry per document template, and OCR-B for the MRZ.
+- **Fonts:** OCR-B is bundled for the MRZ, and passport fields are fitted against OCR-B and the sans faces, keeping whichever reproduces the original best. Other typefaces need adding to the font registry per document template.
+- **Real passports:** bilingual labels and dates (`18 SEP /SEPT 99`), small scans and an MRZ cropped to its first line are handled, tested on one UK specimen. Other states' layouts will need their own label rules; anything not recognised is sent to review, not released.
 - **Free-text names of people outside the corpus** need NER (the optional Presidio hook); the sweep only finds people the corpus already knows.
 - **Two different people with the same full name and no shared evidence** cannot be told apart by name; such cases are routed to review rather than guessed.
 - **Quasi-identifiers:** date of birth is shifted per person; nationality, sex and expiry are kept on purpose. Which attributes to keep is a policy decision, set in `Config.keep_fields`.
