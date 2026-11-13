@@ -49,6 +49,36 @@ def _class_align(got: str, want: str) -> str:
     return "".join(_TO_DIGIT.get(g, g) if w.isdigit() else g for g, w in zip(got, want))
 
 
+def _drop_specks(got: str, want: str) -> str:
+    """Remove one-character tokens the surrogate does not contain.
+
+    A background line or the edge of a pattern next to the value is read as a lone
+    'I' or '1'; it is not part of the drawn text.
+    """
+    keep = set(want.split())
+    return " ".join(t for t in got.split() if len(t) > 1 or t in keep)
+
+
+def _mrz_distance(crop: np.ndarray, want: str) -> tuple[int, int]:
+    """Edit distance between the drawn MRZ line and its best reading, over the data part.
+
+    The trailing run of '<' fillers carries no information and general-purpose OCR reads
+    it unreliably (as K, S or E), so the comparison covers everything before it. Several
+    readings at different sizes are taken, since small scans read better enlarged.
+    """
+    import cv2
+    data = want.rstrip("<")
+    best = len(data)
+    for scale in (1, 2, 3):
+        img = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC) if scale > 1 else crop
+        got = _class_align(clean_line(read_line(img, whitelist=MRZ_CHARS)), want)
+        for k in range(max(0, len(data) - 2), len(data) + 3):
+            best = min(best, Levenshtein.distance(got[:k], data))
+        if best == 0:
+            break
+    return best, len(data)
+
+
 _raw_cache: dict = {}
 
 
@@ -70,14 +100,15 @@ def verify(original: np.ndarray, output: np.ndarray, rec: PageRecord, cfg: Confi
         f = rec.fields[e["idx"]]
         crop = _crop(output, e["render_box"], 4)
         if f.ftype.startswith("mrz_"):
-            got, want = clean_line(read_line(crop, whitelist=MRZ_CHARS)), f.surrogate
+            dist, n = _mrz_distance(crop, f.surrogate)
+            cer = dist / max(n, 1)
         else:
-            got, want = vnorm(_best_text_raw(crop)), vnorm(f.surrogate)
-        got = _class_align(got, want)
-        raw_got = " ".join(_best_text_raw(crop).upper().split()) if not f.ftype.startswith("mrz_") else got
-        raw_want = " ".join(f.surrogate.upper().split())
-        cer = Levenshtein.normalized_distance(got, want) if want else 0.0
-        dist = min(Levenshtein.distance(got, want), Levenshtein.distance(raw_got, raw_want))
+            want = vnorm(f.surrogate)
+            got = _class_align(_drop_specks(vnorm(_best_text_raw(crop)), want), want)
+            raw_got = " ".join(_best_text_raw(crop).upper().split())
+            raw_want = " ".join(f.surrogate.upper().split())
+            cer = Levenshtein.normalized_distance(got, want) if want else 0.0
+            dist = min(Levenshtein.distance(got, want), Levenshtein.distance(raw_got, raw_want))
         # The string is drawn exactly, so read-back errors are reader slips or layout failures.
         # Layout failures (clipping, overflow, misplacement) break many characters; allow one slip.
         ok = cer <= cfg.cer_max or dist <= 1
