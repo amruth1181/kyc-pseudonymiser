@@ -99,20 +99,24 @@ def _png_b64(rgb: np.ndarray) -> str:
 def process(files: list[tuple[str, bytes]], operator: bool = False, *,
             hmac_key_b64: str | None = None, vault_key: str | None = None,
             max_files: int = 8, max_bytes: int = 8 * 1024 * 1024,
-            custom_name: tuple[str, tuple[str, ...]] | None = None) -> dict:
+            custom_name: tuple[str, tuple[str, ...]] | None = None, keep_photo: bool = False) -> dict:
     """Pseudonymise `files` (name, content) and return the result as a dict.
 
-    `custom_name` (from `parse_custom_name`) replaces the generated name. It is an operator
-    feature, ignored for public callers, and applies only when the files hold one person.
-    Document number, dates, places and the photo are always generated, never chosen. A
-    passport whose photo could not be replaced is watermarked when a chosen name is on it.
+    `custom_name` (from `parse_custom_name`) replaces the generated name when the files hold
+    one person. Document number, dates and places are always generated, never chosen.
+
+    `keep_photo` leaves the portrait on passports untouched. A real face next to a new
+    identity is what a forged document looks like, so such a page is always watermarked,
+    for operators too. The same holds for a passport whose photo could not be replaced
+    when a chosen name is on it.
     """
     if not files or len(files) > max_files:
         raise ServiceError(400, f"send between 1 and {max_files} files")
 
     t0 = time.time()
     cfg = _config(operator, hmac_key_b64, vault_key)
-    cfg.custom_name = custom_name if operator else None
+    cfg.custom_name = custom_name
+    cfg.keep_photo = keep_photo
     with tempfile.TemporaryDirectory(prefix="kyc-") as tmp:
         inp, out = Path(tmp) / "in", Path(tmp) / "out"
         inp.mkdir()
@@ -145,9 +149,11 @@ def process(files: list[tuple[str, bytes]], operator: bool = False, *,
             folder = "pseudonymised" if d["status"] == "passed" else "review"
             rgb = np.array(Image.open(out / folder / d["output"]).convert("RGB"))
             reasons = audits[d["output"]]["review_reasons"]
-            # A chosen name never goes out clean next to the original face.
-            face_kept = d["doc_type"] == "passport" and ("photo_not_found" in reasons or "region_not_replaced" in reasons)
-            marked = not operator or (name_applied and face_kept)
+            # The original face never goes out clean: not when it was kept on request, and not
+            # with a chosen name when the photo could not be replaced.
+            unreplaced = "photo_not_found" in reasons or "region_not_replaced" in reasons
+            face_kept = d["doc_type"] == "passport" and (keep_photo or (name_applied and unreplaced))
+            marked = not operator or face_kept
             if marked:
                 rgb = apply_watermark(rgb)
             docs.append({

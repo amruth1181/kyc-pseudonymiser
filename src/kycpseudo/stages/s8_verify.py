@@ -159,6 +159,8 @@ def verify(original: np.ndarray, output: np.ndarray, rec: PageRecord, cfg: Confi
 
     # Regions really replaced
     for r in rec.regions:
+        if r.rtype == "photo" and cfg.keep_photo:
+            continue
         x0, y0, x1, y1 = r.box
         diff = np.abs(original[y0:y1, x0:x1].astype(int) - output[y0:y1, x0:x1].astype(int)).mean()
         if diff < 5:

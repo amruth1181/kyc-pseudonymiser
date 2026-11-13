@@ -33,6 +33,9 @@ class Config:
     # Operator-chosen name (surname, given names) used instead of a generated one. Applied only
     # when the batch holds exactly one person; number, dates, places and photo stay generated.
     custom_name: tuple[str, tuple[str, ...]] | None = None
+    # Leave the portrait untouched. The face is biometric data, so the service watermarks any
+    # page released this way; it is never a clean output.
+    keep_photo: bool = False
     keep_fields: tuple[str, ...] = ("nationality", "issuer", "sex", "expiry", "issue_date", "city")
     # Rendering
     inpaint_radius: int = 3

@@ -56,3 +56,31 @@ def test_fewer_given_names_than_the_original():
     assert format_like("ERIKSSON, Anna Maria", g, s, ["EVA"], "LINDQVIST") == "LINDQVIST, Eva"
     assert format_like("A. M. ERIKSSON", g, s, ["EVA"], "LINDQVIST") == "E. LINDQVIST"
     assert format_like("ERIKSSON<<ANNA<MARIA", g, s, ["EVA"], "LINDQVIST") == "LINDQVIST<<EVA"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(__import__("shutil").which("tesseract") is None, reason="needs tesseract")
+def test_kept_photo_is_always_watermarked_and_public_callers_may_choose_a_name(tmp_path):
+    import base64, io
+    import numpy as np
+    from PIL import Image
+
+    images = service.make_samples(tmp_path / "samples")
+    passport = next(p for p in sorted(images.glob("*.png")) if "passport" in p.name.lower() or p.name == "DOC-0000.png")
+    files = [(passport.name, passport.read_bytes())]
+    key = base64.urlsafe_b64encode(b"k" * 32).decode()
+    name = service.parse_custom_name("Kumar", "Ravi")
+
+    def top_rows(doc):
+        return np.array(Image.open(io.BytesIO(base64.b64decode(doc["image_png_b64"]))).convert("RGB"))[:20]
+
+    clean = service.process(files, True, hmac_key_b64=key, vault_key=key, custom_name=name)["documents"][0]
+    kept = service.process(files, True, hmac_key_b64=key, vault_key=key, custom_name=name, keep_photo=True)["documents"][0]
+    assert clean["doc_type"] == "passport" and not clean["watermarked"]
+    assert kept["watermarked"]                                  # operator token does not lift it
+    assert top_rows(kept)[..., 0].mean() > 150 and top_rows(kept)[..., 1].mean() < 100      # red banner
+    assert "region_not_replaced" not in kept["review_reasons"]
+
+    public = service.process(files, False, custom_name=name)
+    assert public["custom_name"] == "applied" and public["documents"][0]["watermarked"]
+    assert any(f["surrogate"] == "KUMAR" for f in public["documents"][0]["fields"])

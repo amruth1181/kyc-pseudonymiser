@@ -301,5 +301,7 @@ def render(img: np.ndarray, rec: PageRecord, cfg: Config) -> np.ndarray:
         elif res["style_score"] < 0.6:
             rec.review_reasons.append(f"style_mismatch:{f.ftype}")
     for r in rec.regions:
+        if r.rtype == "photo" and cfg.keep_photo:
+            continue
         rec.edits.append(render_region(out, rec, r, cfg))
     return out
