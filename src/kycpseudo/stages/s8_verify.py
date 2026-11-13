@@ -27,7 +27,7 @@ from ..layout import build_lines, text_of, vnorm
 from ..models import Entity, PageRecord
 from ..mrz import _TO_DIGIT, clean_line, repair_td3
 from ..names import normalize
-from ..ocr import MRZ_CHARS, read_line, read_line_conf, read_words
+from ..ocr import MRZ_CHARS, in_parallel, read_line, read_line_conf, read_words
 
 
 def _crop(img: np.ndarray, box, pad: int = 6) -> np.ndarray:
@@ -39,7 +39,7 @@ def _crop(img: np.ndarray, box, pad: int = 6) -> np.ndarray:
 def _best_reading(crop: np.ndarray) -> str:
     import cv2
     up = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    return max([read_line_conf(crop), read_line_conf(up)], key=lambda r: r[1])[0]
+    return max(in_parallel(read_line_conf, [crop, up]), key=lambda r: r[1])[0]
 
 
 def _class_align(got: str, want: str) -> str:
@@ -93,7 +93,9 @@ def verify(original: np.ndarray, output: np.ndarray, rec: PageRecord, cfg: Confi
     res: dict = {"fields": [], "leaks": [], "mrz": None, "locality_px": 0, "regions_changed": True}
     edits = [e for e in rec.edits if e.get("ok")]
 
-    # Fidelity per field
+    # Fidelity per field. The readings are independent, so they are taken side by side first.
+    in_parallel(_best_text_raw, [_crop(output, e["render_box"], 4) for e in edits
+                                 if "idx" in e and not rec.fields[e["idx"]].ftype.startswith("mrz_")])
     for e in edits:
         if "idx" not in e:
             continue

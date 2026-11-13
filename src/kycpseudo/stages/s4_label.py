@@ -23,7 +23,7 @@ from ..layout import (build_lines, find_label, find_value, segments, text_of, un
                       value_right, vnorm)
 from ..models import Field, PageRecord
 from ..mrz import build_line1, build_td3, yymmdd_to_viz
-from ..ocr import read_line_conf
+from ..ocr import in_parallel, read_line_conf
 
 # (label text, field type, layout)
 LABEL_RULES = {
@@ -144,15 +144,18 @@ def refine(img: np.ndarray, rec: PageRecord) -> None:
     are then taken from the MRZ when its check digits validated them.
     """
     h, w = img.shape[:2]
+    targets, views = [], []
     for f in rec.fields:
         if f.ftype.startswith("mrz_"):
             continue
         x0, y0, x1, y1 = f.box
         pad = max(4, (y1 - y0) // 4)
         crop = img[max(0, y0 - pad):min(h, y1 + pad), max(0, x0 - pad):min(w, x1 + pad)]
-        up = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        readings = [read_line_conf(crop), read_line_conf(up)]
-        text, conf = max(readings, key=lambda r: r[1])
+        targets.append(f)
+        views += [crop, cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)]
+    readings = in_parallel(read_line_conf, views)             # two readings per field, all at once
+    for i, f in enumerate(targets):
+        text, conf = max(readings[2 * i:2 * i + 2], key=lambda r: r[1])
         if text and fuzz.ratio(vnorm(text), vnorm(f.value)) >= 70:
             f.value, f.confidence = text, round(conf / 100, 3)
     if rec.mrz and rec.mrz.line1_only:

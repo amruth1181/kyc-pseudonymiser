@@ -7,8 +7,15 @@ plugs in by returning the same ``Word`` list.
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import pytesseract
+
+# Tesseract's own threads fight over the one or two cores of a small host and make each call
+# slower; one thread per call is faster there, and several calls can then run side by side.
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
 
 from .models import Word
 
@@ -63,6 +70,14 @@ def read_line(img: np.ndarray, lang: str = "eng", whitelist: str | None = None) 
         return pytesseract.image_to_string(_border(img), lang=lang, config=cfg).strip()
     except pytesseract.TesseractError:
         return ""
+
+
+def in_parallel(fn, items: list) -> list:
+    """Run several independent OCR calls at once; each one is a separate Tesseract process."""
+    if len(items) < 2:
+        return [fn(x) for x in items]
+    with ThreadPoolExecutor(max_workers=min(4, len(items))) as pool:
+        return list(pool.map(fn, items))
 
 
 def read_text(img: np.ndarray, lang: str = "eng") -> str:
