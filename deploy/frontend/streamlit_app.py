@@ -79,9 +79,9 @@ def allow_public_run() -> bool:
     return allowed
 
 
-def pseudonymise(files: list[tuple[str, bytes]], operator: bool) -> dict:
+def pseudonymise(files: list[tuple[str, bytes]], operator: bool, custom_name=None) -> dict:
     with pipeline_lock():
-        return service.process(files, operator,
+        return service.process(files, operator, custom_name=custom_name,
                                hmac_key_b64=setting("KYCPSEUDO_HMAC_KEY") or None,
                                vault_key=setting("KYCPSEUDO_VAULT_KEY") or None,
                                max_files=MAX_FILES, max_bytes=MAX_FILE_MB * 1024 * 1024)
@@ -104,6 +104,13 @@ with st.sidebar:
         st.success("Token accepted: clean output.")
     elif token:
         st.error("Token not recognised: public demo mode.")
+    custom_surname = custom_given = ""
+    if operator:
+        st.subheader("Name to use (optional)")
+        custom_surname = st.text_input("Surname", max_chars=41, placeholder="generated if empty")
+        custom_given = st.text_input("Given names", max_chars=62, placeholder="generated if empty")
+        st.caption("Used when the documents belong to one person. Document number, dates, places "
+                   "and the photo are always generated.")
     st.caption(f"Up to {MAX_FILES} files, {MAX_FILE_MB} MB each.")
     st.divider()
     st.markdown("[Source on GitHub](https://github.com/amruth1181/kyc-pseudonymiser)")
@@ -159,7 +166,8 @@ if files:
         try:
             if not operator and not allow_public_run():
                 raise service.ServiceError(429, f"Limit of {PUBLIC_PER_HOUR} runs per hour reached. Try again later.")
-            st.session_state["result"] = pseudonymise(files, operator)
+            chosen_name = service.parse_custom_name(custom_surname, custom_given) if operator else None
+            st.session_state["result"] = pseudonymise(files, operator, chosen_name)
             st.session_state["inputs"] = dict(files)
         except service.ServiceError as e:
             st.error(str(e))
@@ -174,6 +182,9 @@ if res:
     c3.metric("Held for review", s["sent_to_review"])
     c4.metric("People found", s["entities"])
     c5.metric("Seconds", res["seconds"])
+    if res.get("custom_name") == "ignored_several_people":
+        st.warning("The name you entered was not used: these documents belong to more than one person, "
+                   "so names were generated.")
     if res["watermarked"]:
         st.info("Public demo: outputs are watermarked. Enter an access token in the sidebar for clean output.")
 
@@ -191,6 +202,9 @@ if res:
         with st.expander(title, expanded=True):
             if not ok:
                 st.warning("Held for review: " + ", ".join(d["review_reasons"]))
+            if d.get("watermarked") and not res["watermarked"]:
+                st.warning("Watermarked: the photo on this page could not be replaced, so it is not "
+                           "released clean with a chosen name.")
             left, right = st.columns(2)
             if d["upload"] in inputs and not d["upload"].lower().endswith(".pdf"):
                 left.image(inputs[d["upload"]], caption="Original", width="stretch")
