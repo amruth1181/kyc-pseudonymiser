@@ -15,7 +15,9 @@ The Streamlit app runs the pipeline itself, so one free deployment is all it nee
 | No token (public) | Watermarked across the page, red banner | Fresh random keys per run: pseudonyms change every run and cannot be reversed | No |
 | Types `ENGINE_TOKEN` in the sidebar | Clean | Your persistent keys: the same person always gets the same pseudonym | Yes, encrypted, in the download |
 
-**Choosing the name.** With the token accepted, the sidebar shows optional *Surname* and *Given names* boxes. If both are filled and the documents belong to one person, that name is used instead of a generated one, on the page and in the MRZ. Only the name can be chosen: document number, dates, places and the photo are always generated, and a passport whose photo could not be replaced is watermarked when a chosen name is on it. Public visitors do not get this option.
+**Choosing the name.** The sidebar has optional *Surname* and *Given names* boxes, open to everyone. If both are filled and the documents belong to one person, that name is used instead of a generated one, on the page and in the MRZ. Only the name can be chosen: document number, dates and places are always generated. Without the token the result is watermarked like all public output.
+
+**Keeping the photo.** Unticking *Replace the passport photo* leaves the original face on the page. Such a page is always watermarked, with or without the token, because a real face next to a new identity is what a forged document looks like. The same applies to a passport whose photo could not be replaced when a chosen name is on it.
 
 Public runs are limited to 20 per hour per browser session, and only one run executes at a time across all visitors. Uploads are processed in a temporary directory that is deleted before the result is shown; nothing is stored. Uploaded filenames are never reused, because scan filenames often contain the customer's name.
 

@@ -118,7 +118,7 @@ runs/demo/
 
 ## Web app
 
-The whole pipeline runs inside a Streamlit app on Streamlit Community Cloud (`deploy/frontend/`). Anyone can try it on the synthetic samples or their own uploads; public outputs are **watermarked** and use throwaway keys. Clean output needs the operator's access token. The token holder may also choose the replacement name for a single person; every other value and the photo stay generated. The same service is also available as a FastAPI engine with a Dockerfile (`deploy/engine/`). Setup steps are in [deploy/README.md](deploy/README.md).
+The whole pipeline runs inside a Streamlit app on Streamlit Community Cloud (`deploy/frontend/`). Anyone can try it on the synthetic samples or their own uploads; public outputs are **watermarked** and use throwaway keys. Clean output needs the operator's access token. Anyone may choose the replacement name for a single person; every other value stays generated. The original photo can be kept on request, and a page that keeps it is always watermarked. The same service is also available as a FastAPI engine with a Dockerfile (`deploy/engine/`). Setup steps are in [deploy/README.md](deploy/README.md).
 
 ## Repository layout
 

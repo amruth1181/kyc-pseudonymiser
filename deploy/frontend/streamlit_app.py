@@ -79,9 +79,9 @@ def allow_public_run() -> bool:
     return allowed
 
 
-def pseudonymise(files: list[tuple[str, bytes]], operator: bool, custom_name=None) -> dict:
+def pseudonymise(files: list[tuple[str, bytes]], operator: bool, custom_name=None, keep_photo=False) -> dict:
     with pipeline_lock():
-        return service.process(files, operator, custom_name=custom_name,
+        return service.process(files, operator, custom_name=custom_name, keep_photo=keep_photo,
                                hmac_key_b64=setting("KYCPSEUDO_HMAC_KEY") or None,
                                vault_key=setting("KYCPSEUDO_VAULT_KEY") or None,
                                max_files=MAX_FILES, max_bytes=MAX_FILE_MB * 1024 * 1024)
@@ -104,13 +104,14 @@ with st.sidebar:
         st.success("Token accepted: clean output.")
     elif token:
         st.error("Token not recognised: public demo mode.")
-    custom_surname = custom_given = ""
-    if operator:
-        st.subheader("Name to use (optional)")
-        custom_surname = st.text_input("Surname", max_chars=41, placeholder="generated if empty")
-        custom_given = st.text_input("Given names", max_chars=62, placeholder="generated if empty")
-        st.caption("Used when the documents belong to one person. Document number, dates, places "
-                   "and the photo are always generated.")
+    st.subheader("Name to use (optional)")
+    custom_surname = st.text_input("Surname", max_chars=41, placeholder="generated if empty")
+    custom_given = st.text_input("Given names", max_chars=62, placeholder="generated if empty")
+    st.caption("Used when the documents belong to one person. Document number, dates and places "
+               "are always generated.")
+    replace_photo = st.checkbox("Replace the passport photo", value=True,
+                                help="Untick to keep the original face. A page that keeps the face is "
+                                     "always watermarked, with or without a token.")
     st.caption(f"Up to {MAX_FILES} files, {MAX_FILE_MB} MB each.")
     st.divider()
     st.markdown("[Source on GitHub](https://github.com/amruth1181/kyc-pseudonymiser)")
@@ -137,7 +138,7 @@ with st.expander("How it works"):
     )
 
 # ------------------------------------------------------------------ input
-tab_samples, tab_upload = st.tabs(["Synthetic samples", "Upload"])
+tab_upload, tab_samples = st.tabs(["Upload", "Synthetic samples"])
 files: list[tuple[str, bytes]] = []
 with tab_samples:
     st.caption("Fictional people from the fictional state of Utopia. Pick documents belonging to the same "
@@ -166,8 +167,8 @@ if files:
         try:
             if not operator and not allow_public_run():
                 raise service.ServiceError(429, f"Limit of {PUBLIC_PER_HOUR} runs per hour reached. Try again later.")
-            chosen_name = service.parse_custom_name(custom_surname, custom_given) if operator else None
-            st.session_state["result"] = pseudonymise(files, operator, chosen_name)
+            chosen_name = service.parse_custom_name(custom_surname, custom_given)
+            st.session_state["result"] = pseudonymise(files, operator, chosen_name, keep_photo=not replace_photo)
             st.session_state["inputs"] = dict(files)
         except service.ServiceError as e:
             st.error(str(e))
@@ -203,8 +204,7 @@ if res:
             if not ok:
                 st.warning("Held for review: " + ", ".join(d["review_reasons"]))
             if d.get("watermarked") and not res["watermarked"]:
-                st.warning("Watermarked: the photo on this page could not be replaced, so it is not "
-                           "released clean with a chosen name.")
+                st.warning("Watermarked: this page still shows the original photo, so it is not released clean.")
             left, right = st.columns(2)
             if d["upload"] in inputs and not d["upload"].lower().endswith(".pdf"):
                 left.image(inputs[d["upload"]], caption="Original", width="stretch")
