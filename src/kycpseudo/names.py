@@ -105,6 +105,9 @@ def _case_like(src: str, word: str) -> str:
     return word.lower()
 
 
+_DROP = "\x00"
+
+
 def format_like(original: str, canon_given: list[str], canon_surname: str,
                 new_given: list[str], new_surname: str) -> str:
     """Rewrite ``original`` with the surrogate names, keeping its pattern.
@@ -131,9 +134,12 @@ def format_like(original: str, canon_given: list[str], canon_surname: str,
             return word
         used.add(best_k)
         kind, idx = canon[best_k][1]
-        target = new_surname if kind == "surname" else (new_given[idx] if idx < len(new_given) else new_given[-1])
+        if kind == "given" and idx >= len(new_given):
+            return _DROP                      # the new name has fewer given names than the original
+        target = new_surname if kind == "surname" else new_given[idx]
         if len(norm) == 1:
             return _case_like(word, target[0])
         return _case_like(word, target)
 
-    return re.sub(r"[A-Za-zÀ-ÿ|]+", replace, original)
+    out = re.sub(r"[A-Za-zÀ-ÿ|]+", replace, original)
+    return re.sub(rf"{_DROP}\.?[ <]?", "", out).rstrip(" <") if _DROP in out else out

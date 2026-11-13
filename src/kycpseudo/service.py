@@ -22,6 +22,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import re
+
 import numpy as np
 from cryptography.fernet import Fernet
 from PIL import Image
@@ -60,6 +62,22 @@ def make_samples(samples_dir: Path, n_people: int = 4, seed: int = 11) -> Path:
     return samples_dir / "images"
 
 
+_NAME_PART = re.compile(r"^[A-Za-z]{1,20}$")
+
+
+def parse_custom_name(surname: str, given_names: str) -> tuple[str, tuple[str, ...]] | None:
+    """Validate an operator-chosen name. Both parts empty means 'generate one'."""
+    sur, giv = surname.split(), given_names.split()
+    if not sur and not giv:
+        return None
+    if not sur or not giv:
+        raise ServiceError(400, "enter both a surname and at least one given name, or leave both empty")
+    if len(sur) > 2 or len(giv) > 3 or not all(_NAME_PART.match(p) for p in sur + giv):
+        raise ServiceError(400, "names may use the letters A-Z only: up to 2 words for the surname, "
+                                "up to 3 given names, 20 letters each")
+    return " ".join(sur).upper(), tuple(g.upper() for g in giv)
+
+
 def _config(operator: bool, hmac_key_b64: str | None, vault_key: str | None) -> Config:
     cfg = Config()
     if operator and hmac_key_b64 and vault_key:
@@ -80,13 +98,21 @@ def _png_b64(rgb: np.ndarray) -> str:
 
 def process(files: list[tuple[str, bytes]], operator: bool = False, *,
             hmac_key_b64: str | None = None, vault_key: str | None = None,
-            max_files: int = 8, max_bytes: int = 8 * 1024 * 1024) -> dict:
-    """Pseudonymise `files` (name, content) and return the result as a dict."""
+            max_files: int = 8, max_bytes: int = 8 * 1024 * 1024,
+            custom_name: tuple[str, tuple[str, ...]] | None = None) -> dict:
+    """Pseudonymise `files` (name, content) and return the result as a dict.
+
+    `custom_name` (from `parse_custom_name`) replaces the generated name. It is an operator
+    feature, ignored for public callers, and applies only when the files hold one person.
+    Document number, dates, places and the photo are always generated, never chosen. A
+    passport whose photo could not be replaced is watermarked when a chosen name is on it.
+    """
     if not files or len(files) > max_files:
         raise ServiceError(400, f"send between 1 and {max_files} files")
 
     t0 = time.time()
     cfg = _config(operator, hmac_key_b64, vault_key)
+    cfg.custom_name = custom_name if operator else None
     with tempfile.TemporaryDirectory(prefix="kyc-") as tmp:
         inp, out = Path(tmp) / "in", Path(tmp) / "out"
         inp.mkdir()
@@ -113,18 +139,24 @@ def process(files: list[tuple[str, bytes]], operator: bool = False, *,
         vault = open_vault(out / "vault.enc", cfg)
         audits = {a["doc_id"]: a for a in map(json.loads, (out / "audit.jsonl").read_text().splitlines())}
 
+        name_applied = bool(cfg.custom_name) and summary["entities"] == 1
         docs = []
         for doc_id, d in sorted(vault["documents"].items()):
             folder = "pseudonymised" if d["status"] == "passed" else "review"
             rgb = np.array(Image.open(out / folder / d["output"]).convert("RGB"))
-            if not operator:
+            reasons = audits[d["output"]]["review_reasons"]
+            # A chosen name never goes out clean next to the original face.
+            face_kept = d["doc_type"] == "passport" and ("photo_not_found" in reasons or "region_not_replaced" in reasons)
+            marked = not operator or (name_applied and face_kept)
+            if marked:
                 rgb = apply_watermark(rgb)
             docs.append({
                 "upload": originals.get(Path(d["input"]).stem.split("-p")[0], doc_id),
                 "output_name": d["output"],
                 "doc_type": d["doc_type"],
                 "status": d["status"],
-                "review_reasons": audits[d["output"]]["review_reasons"],
+                "review_reasons": reasons,
+                "watermarked": marked,
                 "fields": [{"type": f["type"], "original": f["value"], "surrogate": f["surrogate"],
                             "entity": f["entity"]} for f in d["fields"] if not f["type"].startswith("mrz_")],
                 "image_png_b64": _png_b64(rgb),
@@ -135,6 +167,7 @@ def process(files: list[tuple[str, bytes]], operator: bool = False, *,
             "summary": {k: summary[k] for k in ("documents", "passed", "sent_to_review", "entities")},
             "seconds": round(time.time() - t0, 1),
             "documents": docs,
+            "custom_name": ("applied" if name_applied else "ignored_several_people") if cfg.custom_name else None,
         }
         if operator:
             result["vault_b64"] = base64.b64encode((out / "vault.enc").read_bytes()).decode()

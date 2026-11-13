@@ -144,6 +144,7 @@ class Identity:
     given: list[str]
     sex: Optional[str]
     dob_shift_days: int
+    custom: bool = False         # name chosen by the operator rather than generated
 
 
 def to_dict(obj) -> dict:

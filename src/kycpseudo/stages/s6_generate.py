@@ -65,6 +65,7 @@ def make_identities(entities: list[Entity], cfg: Config, corpus_tokens: set[str]
     pools = name_pools()
     used_full: set[tuple] = set()
     out: dict[str, Identity] = {}
+    custom = cfg.custom_name if len(entities) == 1 else None    # one chosen name cannot serve two people
     for e in sorted(entities, key=entity_key):
         loc = e.locale if e.locale in pools else "nordic"
         if e.sex in ("F", "M"):
@@ -86,8 +87,16 @@ def make_identities(entities: list[Entity], cfg: Config, corpus_tokens: set[str]
         shift = cfg.dob_shift_min_days + k.int(ek, "dob") % span
         if k.int(ek, "dob-sign") % 2:
             shift = -shift
-        out[e.entity_id] = Identity(e.entity_id, sur, given, e.sex, shift)
+        if custom:
+            out[e.entity_id] = Identity(e.entity_id, normalize(custom[0]), [normalize(g) for g in custom[1]],
+                                        e.sex, shift, custom=True)
+        else:
+            out[e.entity_id] = Identity(e.entity_id, sur, given, e.sex, shift)
     return out
+
+
+def _cased(original: str, new: str) -> str:
+    return new if original.isupper() else new.title()
 
 
 # ------------------------------------------------------------------- per-field surrogates
@@ -173,6 +182,10 @@ def surrogate_for(f: Field, rec: PageRecord, ent: Entity, ident: Identity, cfg: 
     k = Keyed(cfg.hmac_key)
     ek = entity_key(ent)
     t = f.ftype
+    if ident.custom and t == "surname":
+        return _cased(f.value, ident.surname)
+    if ident.custom and t == "given_names":      # all chosen given names, however many the original had
+        return _cased(f.value, " ".join(ident.given))
     if t in ("surname", "given_names", "full_name", "third_party_name"):
         return format_like(f.value, ent.given, ent.surname, ident.given, ident.surname)
     if t == "doc_number":

@@ -30,6 +30,9 @@ class Config:
     # Surrogates
     dob_shift_min_days: int = 30
     dob_shift_max_days: int = 400
+    # Operator-chosen name (surname, given names) used instead of a generated one. Applied only
+    # when the batch holds exactly one person; number, dates, places and photo stay generated.
+    custom_name: tuple[str, tuple[str, ...]] | None = None
     keep_fields: tuple[str, ...] = ("nationality", "issuer", "sex", "expiry", "issue_date", "city")
     # Rendering
     inpaint_radius: int = 3
