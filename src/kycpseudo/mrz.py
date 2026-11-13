@@ -5,7 +5,6 @@ multiply by the repeating weights 7, 3, 1, sum, and keep the last digit.
 """
 from __future__ import annotations
 
-import re
 from itertools import combinations
 from typing import Optional
 
@@ -29,24 +28,6 @@ def check_digit(s: str) -> str:
     return str(sum(char_value(c) * WEIGHTS[i % 3] for i, c in enumerate(s)) % 10)
 
 
-def _split_names(field: str) -> tuple[str, str]:
-    """Surname and given names from the name field of line 1.
-
-    Names are separated by one filler and the two parts by two, so three fillers in a
-    row can only be padding. Cutting there discards the padding however OCR misread it
-    (a run of '<' often comes back with stray K, S or E).
-    """
-    names, _, padding = field.partition("<<<")
-    names = names.rstrip("<")
-    sur, giv = names.split("<<", 1) if "<<" in names else (names, "")
-    if padding and "<" in giv:
-        # The first filler after the last name is sometimes read as a letter: 'VANESSA<X<<<<'.
-        head, _, last = giv.rpartition("<")
-        if re.fullmatch(r"[KXSEC]{1,2}", last):
-            giv = head
-    return (" ".join(_alpha(sur).replace("<", " ").split()), " ".join(_alpha(giv).replace("<", " ").split()))
-
-
 def build_line1(doc_code: str, issuer: str, surname: str, given_names: str) -> str:
     """Line 1 of a TD3 MRZ: document code, issuing state and the name, padded to 44."""
     name = surname.replace(" ", "<") + "<<" + given_names.replace(" ", "<")
@@ -59,7 +40,9 @@ def parse_line1(line1: str) -> Optional[MRZData]:
     if len(l1) < 30 or not l1.startswith("P") or "<<" not in l1[5:].rstrip("<"):
         return None
     l1 = l1[:44].ljust(44, "<")
-    sur, giv = _split_names(l1[5:])
+    sur, giv = l1[5:].rstrip("<").split("<<", 1)
+    sur = _alpha(sur).replace("<", " ").strip()
+    giv = " ".join(_alpha(giv).replace("<", " ").split())
     return MRZData(doc_code=l1[0:2].replace("<", ""), issuer=_alpha(l1[2:5]), surname=sur, given_names=giv,
                    doc_number="", nationality="", dob="", sex="", expiry="", personal="", valid=False,
                    composite_ok=False, raw=(l1, ""), line1_only=True)
@@ -109,11 +92,10 @@ def _normalize_line2(l2: str) -> str:
     tail is the 14-character personal-number field plus two check digits; OCR
     often drops or invents characters inside its long filler run, so when the
     tail holds no real data it is rebuilt from the fillers and the last digits.
-    A tail that carries a personal number (as Luxembourg prints) is kept as read.
     """
     head, tail = l2[:28], l2[28:]
-    body = tail[:-2] if len(tail) >= 16 else tail.rstrip("<0123456789QDO()")
-    if len(body.replace("<", "")) <= 1:
+    data = tail.rstrip("<0123456789QDO()")
+    if data.replace("<", "") == "" or len(data.replace("<", "")) <= 1:
         digits = [_digits(c) for c in tail[-2:] if _digits(c).isdigit()]
         cd_p = digits[-2] if len(digits) == 2 else "0"
         comp = digits[-1] if digits else "<"
@@ -128,7 +110,13 @@ def parse_td3(line1: str, line2: str) -> Optional[MRZData]:
     l1 = l1[:44].ljust(44, "<")
     l2 = _normalize_line2(l2)
     issuer = _alpha(l1[2:5])
-    sur, giv = _split_names(l1[5:])
+    names = l1[5:].rstrip("<")
+    if "<<" in names:
+        sur, giv = names.split("<<", 1)
+    else:
+        sur, giv = names, ""
+    sur = _alpha(sur).replace("<", " ").strip()
+    giv = _alpha(giv).replace("<", " ").strip()
     num = l2[0:9]
     dob, exp = _digits(l2[13:19]), _digits(l2[21:27])
     pers = l2[28:42]
@@ -146,18 +134,6 @@ def parse_td3(line1: str, line2: str) -> Optional[MRZData]:
                    doc_number=num.replace("<", ""), nationality=_alpha(l2[10:13]), dob=dob,
                    sex=l2[20], expiry=exp, personal=pers.replace("<", ""), valid=valid,
                    composite_ok=composite_ok, raw=(l1, l2))
-
-
-def viz_date_forms(d: str, century_cut: int = 30) -> list[str]:
-    """How a YYMMDD date may be printed in the visual zone, across issuing states."""
-    months = "JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split()
-    yy, mm, dd = int(d[:2]), int(d[2:4]), int(d[4:6])
-    year = 2000 + yy if yy < century_cut else 1900 + yy
-    if not (1 <= mm <= 12):
-        return []
-    return [f"{dd:02d} {months[mm - 1]} {year}",        # 12 AUG 1974
-            f"{dd:02d} {mm:02d} {year}",                 # 12 08 1974, 12.08.1974, 12/08/1974
-            f"{dd:02d} {months[mm - 1]} {yy:02d}"]       # 12 AUG /AOUT 74 (matched fuzzily)
 
 
 def yymmdd_to_viz(d: str, century_cut: int = 30) -> str:

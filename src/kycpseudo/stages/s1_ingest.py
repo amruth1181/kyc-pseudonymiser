@@ -34,22 +34,6 @@ def load_pages(path: Path, dpi: int = 300) -> list[np.ndarray]:
         return [np.array(im.convert("RGB"))]
 
 
-MIN_WIDTH = 1400     # the stages are tuned for scans of about 1500 px; smaller pages are enlarged
-
-
-def enlarge_small(rgb: np.ndarray) -> tuple[np.ndarray, int]:
-    """Enlarge a small scan by a whole factor; returns the page and the factor (1 if untouched).
-
-    Text 8 px tall can neither be read reliably nor redrawn convincingly. Working on an
-    enlarged page gives every later stage the pixels it was tuned for; the output keeps
-    the enlarged size.
-    """
-    factor = max(1, min(4, round(MIN_WIDTH / max(rgb.shape[1], 1))))
-    if factor == 1:
-        return rgb, 1
-    return cv2.resize(rgb, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC), factor
-
-
 def _shear_profiles(ink: np.ndarray, angles, n_cols: int = 160):
     """Row-profile sharpness for each candidate angle.
 

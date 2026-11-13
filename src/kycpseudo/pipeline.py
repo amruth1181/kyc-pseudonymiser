@@ -25,7 +25,7 @@ from .models import PageRecord
 from .ocr import read_words
 from .stages import s5_resolve as s5
 from .stages import s6_generate as s6
-from .stages.s1_ingest import deskew, discover, enlarge_small, estimate_skew, load_pages, sha256
+from .stages.s1_ingest import deskew, discover, estimate_skew, load_pages, sha256
 from .stages.s2_classify import classify
 from .stages.s3_locate import locate
 from .stages.s4_label import label
@@ -49,15 +49,12 @@ def _stages_1_to_4(args) -> Page:
     cache = cache_dir / f"{digest}-{page_no}.bin" if cache_dir else None
     if cache and cache.exists():
         return pickle.loads(Fernet(cfg.vault_key).decrypt(cache.read_bytes()))
-    img, enlarged = enlarge_small(load_pages(path, cfg.dpi)[page_no])
+    img = load_pages(path, cfg.dpi)[page_no]
     angle = estimate_skew(img)
-    # Resampling softens the page, which costs a small scan more than a tilt that moves its
-    # edges by a pixel or so; such a tilt is recorded but left alone.
-    if abs(np.tan(np.radians(angle))) * img.shape[1] / 2 >= 1.5:
-        img = deskew(img, angle)
+    img = deskew(img, angle)
     rec = PageRecord(doc_id=doc_id, path=str(path), sha256=digest, width=img.shape[1], height=img.shape[0],
                      skew_deg=angle)
-    rec.words = read_words(img, cfg.ocr_lang, thorough=enlarged > 1)   # shared by stages 2-4
+    rec.words = read_words(img, cfg.ocr_lang)                 # shared by stages 2-4
     classify(rec)
     locate(img, rec)
     label(img, rec)

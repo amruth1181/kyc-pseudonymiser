@@ -29,8 +29,6 @@ from ..names import guess_locale, guess_sex, name_similarity, normalize, tokens
 from rapidfuzz import fuzz
 from rapidfuzz.distance import JaroWinkler
 
-ISSUER_LOCALE = {"FRA": "french", "LUX": "french", "BEL": "french", "IND": "indian", "PRT": "portuguese",
-                 "BRA": "portuguese", "SWE": "nordic", "NOR": "nordic", "DNK": "nordic", "FIN": "nordic"}
 NAME_FIELDS = {"full_name", "surname", "given_names", "mrz_line1", "third_party_name"}
 
 
@@ -49,8 +47,7 @@ def build_mentions(records: list[PageRecord]) -> list[Mention]:
             mentions.append(Mention(mid, rec.doc_id, f"{giv} {sur}".strip(), normalize(f"{giv} {sur}"),
                                     rec.doc_type, dob=m.dob if m else None,
                                     doc_number=m.doc_number if m else None, sex=m.sex if m else rec.sex,
-                                    given=normalize(giv), surname=normalize(sur),
-                                    issuer=rec.mrz.issuer if rec.mrz else None))
+                                    given=normalize(giv), surname=normalize(sur)))
             for f in rec.fields:
                 if f.ftype in {"surname", "given_names", "mrz_line1", "mrz_line2"}:
                     f.mention_id = mid
@@ -173,8 +170,6 @@ def build_entities(mentions: list[Mention], roots: dict[str, str]) -> list[Entit
         dob = next((m.dob for m in ms if m.dob), None)
         sex = next((m.sex for m in ms if m.sex in ("M", "F")), None)
         locale = guess_locale(surname, given)
-        if locale == "generic":          # unknown names: surrogates in the style of the issuing state
-            locale = next((ISSUER_LOCALE[m.issuer] for m in ms if m.issuer in ISSUER_LOCALE), locale)
         entities.append(Entity(entity_id="", mention_ids=sorted(m.mention_id for m in ms), surname=surname,
                                given=given, sex=sex or guess_sex(given, locale), dob=dob, locale=locale,
                                variants=sorted({m.normalized for m in ms})))

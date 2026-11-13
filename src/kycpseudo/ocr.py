@@ -15,42 +15,23 @@ from .models import Word
 MRZ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
 
 
-def read_words(img: np.ndarray, lang: str = "eng", psm: int = 3, thorough: bool = False) -> list[Word]:
-    """Words with boxes in the coordinates of ``img``.
-
-    ``thorough`` is for small scans (enlarged at ingest): no single setting reads them
-    completely. Fine print needs more enlargement and values printed over a pattern are
-    found by sparse-text mode, so three more passes fill the spots the page reading left
-    empty, with confident words only.
-    """
-    primary = _read_words(img, lang, psm)
-    if not thorough:
-        return primary
-    import cv2
-    big = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    extra = _read_words(img, lang, 11)
-    for mode in (psm, 11):
-        extra += [Word(w.text, (w.box[0] // 2, w.box[1] // 2, -(-w.box[2] // 2), -(-w.box[3] // 2)), w.conf, w.line_id)
-                  for w in _read_words(big, lang, mode)]
-    return _fill_gaps(primary, extra)
+OCR_MIN_WIDTH = 1400     # page-level OCR is unreliable below this; smaller scans are read enlarged
 
 
-def _fill_gaps(primary: list[Word], extra: list[Word]) -> list[Word]:
-    kept = list(primary)
-    for w in sorted(extra, key=lambda w: -w.conf):
-        solid = w.conf >= 40 and sum(c.isalnum() for c in w.text) >= 2     # not a speck or a guess
-        if solid and not any(_overlaps(w.box, k.box) for k in kept):
-            kept.append(w)
-    return kept
+def ocr_scale(img: np.ndarray) -> int:
+    """Whole-number enlargement used to read a small scan (1 for normal scans)."""
+    return max(1, min(4, round(OCR_MIN_WIDTH / max(img.shape[1], 1))))
 
 
-def _overlaps(a, b) -> bool:
-    ix = min(a[2], b[2]) - max(a[0], b[0])
-    iy = min(a[3], b[3]) - max(a[1], b[1])
-    if ix <= 0 or iy <= 0:
-        return False
-    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])) or 1
-    return ix * iy > 0.3 * small
+def read_words(img: np.ndarray, lang: str = "eng", psm: int = 3) -> list[Word]:
+    """Words with boxes in the coordinates of ``img``. Small scans are enlarged for reading only."""
+    s = ocr_scale(img)
+    if s > 1:
+        import cv2
+        big = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
+        return [Word(w.text, (w.box[0] // s, w.box[1] // s, -(-w.box[2] // s), -(-w.box[3] // s)), w.conf, w.line_id)
+                for w in _read_words(big, lang, psm)]
+    return _read_words(img, lang, psm)
 
 
 def _read_words(img: np.ndarray, lang: str, psm: int) -> list[Word]:
@@ -80,19 +61,6 @@ def read_line(img: np.ndarray, lang: str = "eng", whitelist: str | None = None) 
         cfg += f" -c tessedit_char_whitelist={whitelist}"
     try:
         return pytesseract.image_to_string(_border(img), lang=lang, config=cfg).strip()
-    except pytesseract.TesseractError:
-        return ""
-
-
-def read_word(img: np.ndarray, whitelist: str, lang: str = "eng") -> str:
-    """One word from a tight crop, limited to ``whitelist``. Reads print that page-level OCR misses."""
-    import cv2
-    # The margin continues the page's own background: a white frame around print on a tinted
-    # or patterned page shifts the binarisation threshold and the word is lost.
-    framed = cv2.copyMakeBorder(img, 10, 10, 10, 10, cv2.BORDER_REPLICATE)
-    try:
-        return pytesseract.image_to_string(framed, lang=lang,
-                                           config=f"--psm 8 -c tessedit_char_whitelist={whitelist}").strip()
     except pytesseract.TesseractError:
         return ""
 

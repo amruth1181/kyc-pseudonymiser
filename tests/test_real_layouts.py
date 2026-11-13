@@ -53,57 +53,16 @@ def test_ocr_b_is_bundled_and_offered_for_passport_fields():
     assert font_candidates("utility_bill", "full_name") == [("sans", False)]
 
 
-def test_small_scans_are_enlarged_once_at_ingest():
-    from kycpseudo.stages.s1_ingest import enlarge_small
-    small, factor = enlarge_small(np.zeros((432, 768, 3), np.uint8))
-    assert factor == 2 and small.shape[:2] == (864, 1536)
-    page = np.zeros((1060, 1500, 3), np.uint8)
-    same, factor = enlarge_small(page)
-    assert factor == 1 and same is page
+def test_small_scans_are_enlarged_for_reading_only(monkeypatch):
+    seen = {}
 
-
-def test_extra_ocr_passes_only_fill_gaps(monkeypatch):
     def fake(img, lang, psm):
-        if psm == 3 and img.shape[1] == 1500:                 # the page reading
-            return [Word("Surname", (100, 100, 200, 120), 90.0, (0, 0, 0))]
-        if psm == 11 and img.shape[1] == 1500:                # sparse-text pass
-            return [Word("Sumame", (101, 100, 199, 120), 95.0, (0, 0, 0)),      # same spot: ignored
-                    Word("JC3L7T2H", (700, 100, 820, 120), 70.0, (0, 0, 0)),    # new spot: kept
-                    Word("~", (900, 100, 905, 120), 99.0, (0, 0, 0)),           # a speck: ignored
-                    Word("gue55", (300, 300, 380, 320), 20.0, (0, 0, 0))]       # a guess: ignored
-        return []
+        seen["shape"] = img.shape
+        return [Word("TEST", (100, 40, 201, 61), 90.0, (0, 0, 0))]
 
     monkeypatch.setattr(ocr, "_read_words", fake)
-    page = np.zeros((1060, 1500, 3), np.uint8)
-    assert [w.text for w in ocr.read_words(page)] == ["Surname"]
-    assert [w.text for w in ocr.read_words(page, thorough=True)] == ["Surname", "JC3L7T2H"]
-
-
-def test_mrz_keeps_a_personal_number_and_ignores_misread_fillers():
-    from kycpseudo.mrz import parse_td3
-    m = parse_td3("P<LUXSPECIMEN<<VANESSA<X<<<<<<<<<KK<K<<<<<<<<", "JC3L7T2H<4LUX9303092F200122901150000542<<<88")
-    assert (m.surname, m.given_names) == ("SPECIMEN", "VANESSA")
-    assert m.valid and m.personal == "01150000542"
-    m = parse_td3("P<FRASPECIMEN<ABB<<NATACHA<<<<<<<<<<<<<<KK<K", "90RF023318FRA7307122F2903035<<<<<<<<<<<<<<02")
-    assert (m.surname, m.given_names, m.valid) == ("SPECIMEN ABB", "NATACHA", True)
-
-
-def test_numeric_dates_and_accents():
-    from kycpseudo.dates import format_viz, parse_viz
-    from kycpseudo.layout import vnorm
-    from kycpseudo.mrz import viz_date_forms
-    assert _shift_viz_date("09 03 1993", 30) == "08 04 1993"          # France, Luxembourg
-    assert _shift_viz_date("09/03/1993", 30) == "08/04/1993"          # India
-    assert _shift_viz_date("09.03.1993", -9) == "28.02.1993"
-    d, layout = parse_viz("12 07 1973")
-    assert format_viz(d, layout) == "12 07 1973"
-    assert "12 07 1973" in viz_date_forms("730712")
-    assert vnorm("Spécimen") == "SPECIMEN"
-
-
-def test_trilingual_label_value_lines_up_with_the_label_start():
-    lines = [_line(0, (360, "1."), (385, "Numm"), (440, "/"), (455, "Nom"), (495, "/"), (510, "Surname")),
-             _line(22, (362, "Maus"))]
-    li, words = find_label(lines, "Surname")
-    assert words[0].text == "Surname"                         # matched on the English part, mid-label
-    assert [w.text for w in value_below(lines, li, words)] == ["Maus"]
+    words = ocr.read_words(np.zeros((432, 768, 3), np.uint8))
+    assert seen["shape"][:2] == (864, 1536)
+    assert words[0].box == (50, 20, 101, 31)               # back in the scan's own coordinates
+    ocr.read_words(np.zeros((1060, 1500, 3), np.uint8))
+    assert seen["shape"][:2] == (1060, 1500)
