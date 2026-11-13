@@ -22,7 +22,7 @@ from rapidfuzz import fuzz
 from ..layout import (build_lines, find_label, find_value, segments, text_of, union_box, value_below,
                       value_right, vnorm)
 from ..models import Field, PageRecord
-from ..mrz import build_td3, yymmdd_to_viz
+from ..mrz import build_line1, build_td3, yymmdd_to_viz
 from ..ocr import read_line_conf
 
 # (label text, field type, layout)
@@ -46,6 +46,7 @@ LABEL_RULES = {
     ],
 }
 
+PASSPORT_NUMBER = re.compile(r"^(?=(?:.*\d){6})[A-Z0-9]{7,9}$")
 POSTCODE = re.compile(r"^[A-Z]{2}-\d{4}$")
 IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){3,7}\b")
 
@@ -104,6 +105,8 @@ def label(img: np.ndarray, rec: PageRecord) -> PageRecord:
                     _add(rec, "postcode", [w], "pattern")
 
     # 3. Patterns anywhere on the page
+    if rec.doc_type == "passport":
+        _passport_extras(rec, lines)
     for line in lines:
         for seg in segments(line):
             t = text_of(seg)
@@ -116,6 +119,21 @@ def label(img: np.ndarray, rec: PageRecord) -> PageRecord:
     # 5. Second, closer reading of every value, reconciled with the MRZ where it is checksum-protected
     refine(img, rec)
     return rec
+
+
+def _passport_extras(rec: PageRecord, lines) -> None:
+    """Values that do not depend on one template's label wording."""
+    have = {f.ftype for f in rec.fields}
+    if "doc_number" not in have:
+        # The number label is often lost in the header print; the value itself is distinctive.
+        top = [w for line in lines for w in line if "<" not in w.text and PASSPORT_NUMBER.match(w.text)]
+        if len(top) == 1:
+            _add(rec, "doc_number", top, "pattern", 0.9)
+    hit = find_label(lines, "Sex")
+    if hit:
+        words = value_below(lines, hit[0], hit[1])
+        if words and words[0].text.upper() in ("F", "M"):
+            rec.sex = words[0].text.upper()        # kept on the page; steers the choice of surrogate names
 
 
 def refine(img: np.ndarray, rec: PageRecord) -> None:
@@ -137,6 +155,8 @@ def refine(img: np.ndarray, rec: PageRecord) -> None:
         text, conf = max(readings, key=lambda r: r[1])
         if text and fuzz.ratio(vnorm(text), vnorm(f.value)) >= 70:
             f.value, f.confidence = text, round(conf / 100, 3)
+    if rec.mrz and rec.mrz.line1_only:
+        _reconcile_line1(rec)
     if rec.mrz and rec.mrz.valid:
         m = rec.mrz
         by_type = {f.ftype: f for f in rec.fields}
@@ -159,6 +179,24 @@ def refine(img: np.ndarray, rec: PageRecord) -> None:
                 f.value = l1
             elif f.ftype == "mrz_line2":
                 f.value = l2
+
+
+def _reconcile_line1(rec: PageRecord) -> None:
+    """MRZ line 1 without line 2 has no check digits, so the visual zone confirms the name."""
+    m = rec.mrz
+    by_type = {f.ftype: f for f in rec.fields}
+    sur, giv = m.surname, m.given_names
+    agree = True
+    for ftype, mrz_value in (("surname", sur), ("given_names", giv)):
+        if ftype not in by_type or fuzz.ratio(vnorm(by_type[ftype].value), vnorm(mrz_value)) < 80:
+            agree = False
+    if agree:
+        sur, giv = vnorm(by_type["surname"].value), vnorm(by_type["given_names"].value)
+    else:
+        rec.review_reasons.append("mrz_name_unconfirmed")
+    m.surname, m.given_names = sur, giv
+    rec.fields.append(Field(ftype="mrz_line1", value=build_line1(m.doc_code or "P", m.issuer, sur, giv),
+                            box=m.line_boxes[0], source="mrz"))
 
 
 def _presidio(rec: PageRecord, lines) -> None:

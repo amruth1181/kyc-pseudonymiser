@@ -69,9 +69,12 @@ def find_label(lines: list[list[Word]], label: str, min_ratio: float = 85) -> tu
         for i in range(len(line)):
             for k in (n, n + 1):
                 win = line[i:i + k]
-                if not win:
-                    continue
-                r = fuzz.ratio(normalize(text_of(win)), target)
+                if not win or not normalize(win[0].text):
+                    continue                        # a label starts at a word, not at '(5)' or a bullet
+                got = normalize(text_of(win))
+                # Bilingual forms print 'Date of birth/Date de naissance': the label is the leading words.
+                lead = " ".join(got.split()[:len(target.split())])
+                r = max(fuzz.ratio(got, target), fuzz.ratio(lead, target))
                 if r >= min_ratio and (best is None or r > best[0]):
                     best = (r, li, win)
     return (best[1], best[2]) if best else None

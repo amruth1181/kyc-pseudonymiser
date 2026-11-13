@@ -15,7 +15,26 @@ from .models import Word
 MRZ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"
 
 
+OCR_MIN_WIDTH = 1400     # page-level OCR is unreliable below this; smaller scans are read enlarged
+
+
+def ocr_scale(img: np.ndarray) -> int:
+    """Whole-number enlargement used to read a small scan (1 for normal scans)."""
+    return max(1, min(4, round(OCR_MIN_WIDTH / max(img.shape[1], 1))))
+
+
 def read_words(img: np.ndarray, lang: str = "eng", psm: int = 3) -> list[Word]:
+    """Words with boxes in the coordinates of ``img``. Small scans are enlarged for reading only."""
+    s = ocr_scale(img)
+    if s > 1:
+        import cv2
+        big = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
+        return [Word(w.text, (w.box[0] // s, w.box[1] // s, -(-w.box[2] // s), -(-w.box[3] // s)), w.conf, w.line_id)
+                for w in _read_words(big, lang, psm)]
+    return _read_words(img, lang, psm)
+
+
+def _read_words(img: np.ndarray, lang: str, psm: int) -> list[Word]:
     d = pytesseract.image_to_data(img, lang=lang, config=f"--psm {psm}", output_type=pytesseract.Output.DICT)
     words = []
     for i, text in enumerate(d["text"]):

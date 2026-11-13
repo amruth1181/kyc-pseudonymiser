@@ -28,11 +28,30 @@ def check_digit(s: str) -> str:
     return str(sum(char_value(c) * WEIGHTS[i % 3] for i, c in enumerate(s)) % 10)
 
 
+def build_line1(doc_code: str, issuer: str, surname: str, given_names: str) -> str:
+    """Line 1 of a TD3 MRZ: document code, issuing state and the name, padded to 44."""
+    name = surname.replace(" ", "<") + "<<" + given_names.replace(" ", "<")
+    return (doc_code.ljust(2, "<") + issuer + name)[:44].ljust(44, "<")
+
+
+def parse_line1(line1: str) -> Optional[MRZData]:
+    """Read line 1 alone, for scans where line 2 is cropped off. Carries no check digits."""
+    l1 = clean_line(line1)
+    if len(l1) < 30 or not l1.startswith("P") or "<<" not in l1[5:].rstrip("<"):
+        return None
+    l1 = l1[:44].ljust(44, "<")
+    sur, giv = l1[5:].rstrip("<").split("<<", 1)
+    sur = _alpha(sur).replace("<", " ").strip()
+    giv = " ".join(_alpha(giv).replace("<", " ").split())
+    return MRZData(doc_code=l1[0:2].replace("<", ""), issuer=_alpha(l1[2:5]), surname=sur, given_names=giv,
+                   doc_number="", nationality="", dob="", sex="", expiry="", personal="", valid=False,
+                   composite_ok=False, raw=(l1, ""), line1_only=True)
+
+
 def build_td3(doc_code: str, issuer: str, surname: str, given_names: str, doc_number: str,
               nationality: str, dob: str, sex: str, expiry: str, personal: str = "") -> tuple[str, str]:
     """Return the two 44-character lines with every check digit computed."""
-    name = surname.replace(" ", "<") + "<<" + given_names.replace(" ", "<")
-    line1 = (doc_code.ljust(2, "<") + issuer + name)[:44].ljust(44, "<")
+    line1 = build_line1(doc_code, issuer, surname, given_names)
     num = doc_number.ljust(9, "<")[:9]
     pers = personal.ljust(14, "<")[:14]
     parts = [num, check_digit(num), nationality, dob, check_digit(dob), sex, expiry,

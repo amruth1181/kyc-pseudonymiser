@@ -14,7 +14,7 @@ import numpy as np
 
 from ..layout import build_lines, find_label, text_of, union_box
 from ..models import PageRecord, Region
-from ..mrz import parse_td3, repair_td3
+from ..mrz import parse_line1, repair_td3
 from ..ocr import MRZ_CHARS, read_line
 from .s2_classify import looks_like_mrz
 
@@ -22,6 +22,9 @@ from .s2_classify import looks_like_mrz
 def locate_mrz(img: np.ndarray, rec: PageRecord) -> None:
     lines = build_lines(rec.words)
     cands = [l for l in lines if looks_like_mrz(text_of(l))]
+    if len(cands) == 1:
+        _locate_line1_only(img, rec, cands[0])
+        return
     if len(cands) < 2:
         return
     l1w, l2w = cands[-2], cands[-1]
@@ -49,6 +52,35 @@ def locate_mrz(img: np.ndarray, rec: PageRecord) -> None:
         rec.mrz = mrz
         if not mrz.valid:
             rec.review_reasons.append("mrz_checksum_failed")
+
+
+def _locate_line1_only(img: np.ndarray, rec: PageRecord, lw) -> None:
+    """A scan cropped above MRZ line 2: the name line is still personal data and is replaced."""
+    h, w = img.shape[:2]
+    x0, y0, x1, y1 = _ink_extent(img, union_box([x.box for x in lw]))
+    pad = max(2, (y1 - y0) // 3)
+    crop = img[max(0, y0 - pad):min(h, y1 + pad), max(0, x0 - pad):min(w, x1 + pad)]
+    readings = [text_of(lw)] + [read_line(prep(crop), whitelist=MRZ_CHARS) for prep in (_as_is, _upscale_binarize)]
+    parsed = [m for m in map(parse_line1, readings[1:] + readings[:1]) if m]
+    if not parsed:
+        return
+    mrz = parsed[0]
+    mrz.line_boxes = [(x0, y0, x1, y1)]
+    rec.mrz = mrz
+
+
+def _ink_extent(img: np.ndarray, box: tuple) -> tuple:
+    """Widen a line box to the full run of characters; OCR often drops the last fillers."""
+    x0, y0, x1, y1 = box
+    band = cv2.cvtColor(img[y0:y1], cv2.COLOR_RGB2GRAY)
+    _, ink = cv2.threshold(band, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    cols = ink.any(axis=0)
+    gap = int(1.5 * (y1 - y0))                     # wider than any space between MRZ characters
+    while x1 < len(cols) and cols[x1:x1 + gap].any():
+        x1 += 1
+    while x0 > 0 and cols[max(0, x0 - gap):x0].any():
+        x0 -= 1
+    return x0, y0, x1, y1
 
 
 def _as_is(crop: np.ndarray) -> np.ndarray:

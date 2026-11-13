@@ -24,7 +24,7 @@ from datetime import date, timedelta
 from ..config import Config
 from ..ff1 import FF1
 from ..models import Entity, Field, Identity, PageRecord
-from ..mrz import build_td3
+from ..mrz import build_line1, build_td3
 from ..names import format_like, name_pools, normalize
 
 SAFE_LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ"
@@ -92,12 +92,28 @@ def make_identities(entities: list[Entity], cfg: Config, corpus_tokens: set[str]
 
 # ------------------------------------------------------------------- per-field surrogates
 
-def _shift_viz_date(text: str, days: int) -> str:
-    m = re.match(r"(\d{1,2})\s+([A-Z]{3})\s+(\d{4})", text.upper())
-    if not m:
-        return text
-    d = date(int(m.group(3)), MONTHS.index(m.group(2)) + 1, int(m.group(1))) + timedelta(days=days)
-    return f"{d.day:02d} {MONTHS[d.month - 1]} {d.year}"
+MONTHS_FR = "JAN FEV MARS AVR MAI JUIN JUIL AOUT SEPT OCT NOV DEC".split()
+_VIZ_DATE = re.compile(r"^\s*(\d{1,2})\s+([A-Z]{3})\s*(/\s*[A-Z]{3,5})?\s+(\d{4}|\d{2})\s*$")
+
+
+def _shift_viz_date(text: str, days: int) -> str | None:
+    """Shift a printed date, keeping its layout: '12 AUG 1974' or the bilingual '18 SEP /SEPT 99'.
+
+    Returns None when the text is not a date this function knows, so the page goes to
+    review instead of keeping the original value.
+    """
+    m = _VIZ_DATE.match(text.upper())
+    if not m or m.group(2) not in MONTHS:
+        return None
+    year = int(m.group(4))
+    if len(m.group(4)) == 2:                          # a birth year is never in the future
+        year += 2000 if year <= date.today().year % 100 else 1900
+    try:
+        d = date(year, MONTHS.index(m.group(2)) + 1, int(m.group(1))) + timedelta(days=days)
+    except ValueError:
+        return None
+    month = MONTHS[d.month - 1] + (f" /{MONTHS_FR[d.month - 1]}" if m.group(3) else "")
+    return f"{d.day:02d} {month} {d.year if len(m.group(4)) == 4 else f'{d.year % 100:02d}'}"
 
 
 def _shift_yymmdd(s: str, days: int, century_cut: int = 30) -> str:
@@ -182,6 +198,8 @@ def surrogate_for(f: Field, rec: PageRecord, ent: Entity, ident: Identity, cfg: 
         l1, l2 = build_td3(m.doc_code or "P", m.issuer, ident.surname, " ".join(ident.given), num,
                            m.nationality, _shift_yymmdd(m.dob, ident.dob_shift_days), m.sex, m.expiry, m.personal)
         return l1 if t == "mrz_line1" else l2
+    if t == "mrz_line1" and rec.mrz and rec.mrz.line1_only:
+        return build_line1(rec.mrz.doc_code or "P", rec.mrz.issuer, ident.surname, " ".join(ident.given))
     return None
 
 

@@ -57,6 +57,7 @@ class MRZData:
     composite_ok: bool = True
     line_boxes: list[Box] = field(default_factory=list)
     raw: tuple[str, str] = ("", "")
+    line1_only: bool = False     # line 2 is not on the image (cropped scan): names only, no check digits
 
 
 @dataclass
@@ -71,6 +72,7 @@ class PageRecord:
     skew_deg: float = 0.0
     words: list[Word] = field(default_factory=list)
     mrz: Optional[MRZData] = None
+    sex: Optional[str] = None        # read from the visual zone; kept, used to pick surrogate names
     fields: list[Field] = field(default_factory=list)
     regions: list[Region] = field(default_factory=list)
     edits: list[dict] = field(default_factory=list)

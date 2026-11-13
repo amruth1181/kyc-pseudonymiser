@@ -46,7 +46,7 @@ def build_mentions(records: list[PageRecord]) -> list[Mention]:
                 continue
             mentions.append(Mention(mid, rec.doc_id, f"{giv} {sur}".strip(), normalize(f"{giv} {sur}"),
                                     rec.doc_type, dob=m.dob if m else None,
-                                    doc_number=m.doc_number if m else None, sex=m.sex if m else None,
+                                    doc_number=m.doc_number if m else None, sex=m.sex if m else rec.sex,
                                     given=normalize(giv), surname=normalize(sur)))
             for f in rec.fields:
                 if f.ftype in {"surname", "given_names", "mrz_line1", "mrz_line2"}:
