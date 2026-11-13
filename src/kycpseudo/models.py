@@ -112,6 +112,7 @@ class Mention:
     sex: Optional[str] = None
     given: Optional[str] = None      # known split, e.g. from the MRZ
     surname: Optional[str] = None
+    issuer: Optional[str] = None     # issuing state of the document (MRZ), a hint for the name style
 
 
 @dataclass

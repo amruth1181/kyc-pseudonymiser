@@ -7,6 +7,7 @@ the gap between them is wide, as on forms.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from rapidfuzz import fuzz
 
@@ -16,7 +17,8 @@ from .names import normalize
 
 def vnorm(text: str) -> str:
     """Value normalisation: keeps digits (unlike name normalisation), drops punctuation."""
-    return " ".join(re.sub(r"[^A-Z0-9]", " ", text.upper().replace("|", "I")).split())
+    t = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return " ".join(re.sub(r"[^A-Z0-9]", " ", t.upper().replace("|", "I")).split())
 
 
 def union_box(boxes: list[Box]) -> Box:
@@ -100,14 +102,22 @@ def find_value(lines: list[list[Word]], value: str, min_ratio: float = 85,
 
 def value_below(lines: list[list[Word]], label_line: int, label_words: list[Word], max_dy: int = 80) -> list[Word] | None:
     """Form layout: the value sits on the next line, left-aligned with its label."""
-    lx0, lbottom = label_words[0].box[0], max(w.box[3] for w in label_words)
-    for line in lines[label_line + 1:label_line + 3]:
-        top = min(w.box[1] for w in line)
-        if top - lbottom > max_dy:
-            break
-        for seg in segments(line):
-            if abs(seg[0].box[0] - lx0) < 30:
-                return seg
+    lbottom = max(w.box[3] for w in label_words)
+    tol = max(30, 2 * (lbottom - min(w.box[1] for w in label_words)))
+    # A trilingual label ('1. Numm / Nom / Surname') is matched on one of its languages, which
+    # may sit mid-label; the value lines up with the start of the whole label.
+    starts = [label_words[0].box[0]]
+    for seg in segments(lines[label_line]):
+        if any(w is label_words[0] for w in seg):
+            starts.append(seg[0].box[0])
+    for lx0 in starts:
+        for line in lines[label_line + 1:label_line + 3]:
+            top = min(w.box[1] for w in line)
+            if top - lbottom > max_dy:
+                break
+            for seg in segments(line):
+                if abs(seg[0].box[0] - lx0) < tol:
+                    return seg
     return None
 
 
