@@ -9,12 +9,14 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 
 from ..layout import build_lines, find_label, text_of, union_box
 from ..models import PageRecord, Region
-from ..mrz import parse_line1, repair_td3
+from ..mrz import clean_line, parse_line1, parse_td3, repair_td3
 from ..ocr import MRZ_CHARS, read_line
 from .s2_classify import looks_like_mrz
 
@@ -38,16 +40,26 @@ def locate_mrz(img: np.ndarray, rec: PageRecord) -> None:
         boxes.append((x0, y0, x1, y1))
     # Several independent readings; the first whose check digits validate wins.
     readings = [[text_of(l1w), text_of(l2w)]]
-    for prep in (_as_is, _upscale_binarize):
+    for prep in (_as_is, _upscale_binarize, _upscale(2), _upscale(3)):
         readings.append([read_line(prep(c), whitelist=MRZ_CHARS) for c in crops])
+        cand = repair_td3(*readings[-1])
+        if cand and cand.valid and cand.composite_ok:
+            break                                   # every check digit agrees: no need to read again
     mrz = None
     for texts in readings[1:] + readings[:1]:
         cand = repair_td3(*texts)
-        if cand and (mrz is None or (cand.valid and not mrz.valid)):
+        better = cand and (mrz is None or (cand.valid, cand.composite_ok) > (mrz.valid, mrz.composite_ok))
+        if better:
             mrz = cand
-        if mrz and mrz.valid:
+        if mrz and mrz.valid and mrz.composite_ok:
             break
     if mrz:
+        # Check digits cover line 2 only. For line 1, the reading that kept the most fillers is
+        # the cleanest: misreads turn '<' into letters, never the other way round.
+        line1 = max((clean_line(t[0]) for t in readings), key=lambda t: (t.startswith("P"), t.count("<")))
+        again = parse_td3(line1, mrz.raw[1])
+        if again and (again.valid, again.composite_ok) == (mrz.valid, mrz.composite_ok):
+            mrz = again
         mrz.line_boxes = boxes
         rec.mrz = mrz
         if not mrz.valid:
@@ -87,6 +99,10 @@ def _as_is(crop: np.ndarray) -> np.ndarray:
     return crop
 
 
+def _upscale(factor: int):
+    return lambda crop: cv2.resize(crop, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC)
+
+
 def _upscale_binarize(crop: np.ndarray) -> np.ndarray:
     g = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
     g = cv2.resize(g, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
@@ -108,9 +124,26 @@ def locate_photo(img: np.ndarray) -> tuple | None:
         if best is None or w * h > best[2] * best[3]:
             best = (x, y, w, h)
     if not best:
-        return None
+        return _locate_face(img)
     x, y, w, h = best
     return (x, y, x + w, y + h)
+
+
+FACE_MODEL = Path(__file__).resolve().parents[1] / "data" / "models" / "face_detection_yunet_2023mar.onnx"
+
+
+def _locate_face(img: np.ndarray) -> tuple | None:
+    """Portrait without a printed frame (most real passports): find the face, cover head and shoulders."""
+    H, W = img.shape[:2]
+    try:
+        detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (W, H), 0.6, 0.3, 50)
+        _, faces = detector.detect(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    except (cv2.error, AttributeError):
+        return None                                  # no detector in this OpenCV build: page goes to review
+    if faces is None or len(faces) == 0:
+        return None
+    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])[:4]      # the main portrait, not a ghost image
+    return (max(0, int(x - 0.45 * w)), max(0, int(y - 0.55 * h)), min(W, int(x + 1.45 * w)), min(H, int(y + 1.6 * h)))
 
 
 def locate_signature(img: np.ndarray, rec: PageRecord) -> tuple | None:
@@ -119,17 +152,30 @@ def locate_signature(img: np.ndarray, rec: PageRecord) -> tuple | None:
     if not hit:
         return None
     _, lw = hit
-    x0, _, _, y1 = union_box([w.box for w in lw])
+    x0, y0, _, y1 = union_box([w.box for w in lw])
     H, W = img.shape[:2]
-    win = (x0, y1 + 4, min(W, x0 + 520), min(H, y1 + 150))
+    lh = y1 - y0                                   # the search window scales with the label's print size
+    floor = min([b[1] for b in rec.mrz.line_boxes], default=H) - 4 if rec.mrz else H   # never into the MRZ
+    win = (x0, y1 + 4, min(W, x0 + 26 * lh), min(H, floor, y1 + int(7.5 * lh)))
+    if win[3] - win[1] < lh:
+        return None
     gray = cv2.cvtColor(img[win[1]:win[3], win[0]:win[2]], cv2.COLOR_RGB2GRAY)
     _, ink = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     ys, xs = np.nonzero(ink)
     if len(xs) < 50:
         return None
-    return (win[0] + int(xs.min()) - 4, win[1] + int(ys.min()) - 4,
-            win[0] + int(xs.max()) + 4, win[1] + int(ys.max()) + 4)
+    box = (max(0, win[0] + int(xs.min()) - 4), max(0, win[1] + int(ys.min()) - 4),
+           min(W, win[0] + int(xs.max()) + 4), min(H, win[1] + int(ys.max()) + 4))
+    if box[2] >= W - 2 or box[3] >= H - 2 or box[0] <= 2:
+        return None                # ink running to the page edge is a border or shadow, not a signature
+    # Handwriting is not read as confident words. Print inside the box means this is not a
+    # signature (a number, a stamp, the next field), and it must not be painted over.
+    for w in rec.words:
+        cx, cy = (w.box[0] + w.box[2]) / 2, (w.box[1] + w.box[3]) / 2
+        if w.conf >= 70 and len(w.text) >= 3 and box[0] <= cx <= box[2] and box[1] <= cy <= box[3]:
+            return None
+    return box
 
 
 def locate(img: np.ndarray, rec: PageRecord) -> PageRecord:
