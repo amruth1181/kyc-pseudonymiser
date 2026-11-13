@@ -31,13 +31,14 @@ from PIL import Image, ImageDraw, ImageFont
 from rapidfuzz import fuzz
 
 from ..config import Config
-from ..fonts import font_for, font_path
+from ..fonts import font_candidates, font_path
 from ..layout import vnorm
 from ..models import Field, PageRecord, Region
 from ..ocr import read_line
 from ..synth.generator import draw_avatar, draw_signature
 
 Box = tuple[int, int, int, int]
+FONT_SWITCH_MARGIN = 0.03    # style-score gain needed to prefer a font over the template's own
 
 
 def _seed(cfg: Config, *parts: str) -> int:
@@ -125,7 +126,7 @@ def _fit(text: str, fname: str, meas: dict, mono: bool, crop_rgb: np.ndarray) ->
     for dx in (-1.0, -0.5, 0.0, 0.5, 1.0):               # sub-pixel alignment
         for dy in (-1.0, -0.5, 0.0, 0.5, 1.0):
             shifted = _place(a, ox, oy, (origin[0] + dx, origin[1] + dy), sx, gray.shape)
-            for sigma in (0.0, 0.4, 0.6, 0.8, 1.0, 1.3):
+            for sigma in (0.0, 0.4, 0.6, 0.8, 1.0, 1.3, 1.7):
                 al = (cv2.GaussianBlur(shifted, (0, 0), sigma) if sigma else shifted)[y0:y1, x0:x1]
                 denom = float((al * al).sum()) or 1.0
                 ink = bg_rgb + ((rgb[y0:y1, x0:x1] - bg_rgb) * al[..., None]).sum(axis=(0, 1)) / denom
@@ -185,9 +186,14 @@ def render_field(img: np.ndarray, rec: PageRecord, f: Field, cfg: Config) -> dic
     x0, y0, x1, y1 = max(0, x0 - p), max(0, y0 - p), min(W, x1 + p), min(H, y1 + p)
     crop = img[y0:y1, x0:x1].copy()
     meas = _measure(crop)
-    mono = f.ftype.startswith("mrz_")
-    fname = font_for(rec.doc_type, f.ftype)
-    fit = _fit(f.value if not mono else f.value[:44], fname, meas, mono, crop)
+    # Fit every candidate font to the original text; another font replaces the template's
+    # own only when it reproduces the scan clearly better.
+    fit, fname = None, None
+    for cand, fixed_pitch in font_candidates(rec.doc_type, f.ftype):
+        text = f.value[:44] if f.ftype.startswith("mrz_") else f.value
+        c = _fit(text, cand, meas, fixed_pitch, crop)
+        if c and (fit is None or c["style_score"] > fit["style_score"] + FONT_SWITCH_MARGIN):
+            fit, fname = c, cand
     if fit is None:
         return {"ok": False, "reason": "no_ink_found"}
 
@@ -207,7 +213,8 @@ def render_field(img: np.ndarray, rec: PageRecord, f: Field, cfg: Config) -> dic
     # 1. erase the field's ink strokes (plus anti-aliased edges)
     win_gray = cv2.cvtColor(win, cv2.COLOR_RGB2GRAY)
     mask = _stroke_mask(win_gray, meas["thr"], (dy, dy + (y1 - y0)), (0, x1 - x0)).astype(np.uint8)
-    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2)
+    # The halo to remove grows with the scan's blur; a soft scan leaves grey fringes otherwise.
+    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2 + int(fit["sigma"] >= 1.0))
     ctx = 12
     cy0, cx0 = max(0, ey0 - ctx), max(0, x0 - ctx)
     cy1, cx1 = min(H, ey1 + ctx), min(W, wx1 + ctx)
@@ -241,7 +248,7 @@ def render_field(img: np.ndarray, rec: PageRecord, f: Field, cfg: Config) -> dic
     changed = (x0 + int(xs.min()), ey0 + int(ys.min()), x0 + int(xs.max()) + 1, ey0 + int(ys.max()) + 1) \
         if len(xs) else f.box
     return {"ok": True, "field": f.ftype, "box": changed, "render_box": (x0, y0, wx1, y1),
-            "font_size": fit["size"], "sx": round(fit["sx"], 3), "sigma": fit["sigma"],
+            "font": fname, "font_size": fit["size"], "sx": round(fit["sx"], 3), "sigma": fit["sigma"],
             "style_score": fit["style_score"], "erase_residue": bool(residue_hit)}
 
 
