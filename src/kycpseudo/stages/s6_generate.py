@@ -151,6 +151,18 @@ def _identifier(k: Keyed, value: str, label: str) -> str:
     return "".join(out)
 
 
+def decrypt_digits(key: bytes, surrogate: str, label: str) -> str | None:
+    """Recover the original digits of an identifier from its surrogate, using the key alone.
+
+    The inverse of the FF1 step in ``_identifier``: no vault is needed. Returns None when the
+    identifier has fewer than six digits (those are substituted, not encrypted).
+    """
+    digits = "".join(c for c in surrogate if c.isdigit())
+    if len(digits) < 6:
+        return None
+    return Keyed(key).ff1_10.decrypt(digits, tweak=label.encode())
+
+
 def _iban(k: Keyed, value: str) -> str:
     compact = value.replace(" ", "").upper()
     country, bban = compact[:2], compact[4:]

@@ -30,7 +30,8 @@ from PIL import Image
 
 from .config import Config
 from .pipeline import run
-from .stages.s9_release import open_vault
+from .stages.s6_generate import decrypt_digits
+from .stages.s9_release import open_vault, restore_page
 from .synth.generator import generate
 from .watermark import apply_watermark
 
@@ -156,6 +157,7 @@ def process(files: list[tuple[str, bytes]], operator: bool = False, *,
             marked = not operator or face_kept
             if marked:
                 rgb = apply_watermark(rgb)
+            d["watermarked"] = marked              # recorded in the vault: such a page cannot be undone exactly
             docs.append({
                 "upload": originals.get(Path(d["input"]).stem.split("-p")[0], doc_id),
                 "output_name": d["output"],
@@ -176,5 +178,57 @@ def process(files: list[tuple[str, bytes]], operator: bool = False, *,
             "custom_name": ("applied" if name_applied else "ignored_several_people") if cfg.custom_name else None,
         }
         if operator:
-            result["vault_b64"] = base64.b64encode((out / "vault.enc").read_bytes()).decode()
+            sealed = Fernet(cfg.vault_key).encrypt(json.dumps(vault).encode())
+            result["vault_b64"] = base64.b64encode(sealed).decode()
     return result
+
+
+def restore(vault_bytes: bytes, images: dict[str, bytes], *, vault_key: str | None,
+            hmac_key_b64: str | None = None) -> list[dict]:
+    """Reverse pseudonymisation: rebuild the original pages from the outputs and their vault.
+
+    Only the holder of the vault key can do this, which is the difference between
+    pseudonymised and anonymised data. `images` maps output file names to PNG bytes.
+    Each result carries the restored page, the surrogate -> original mapping, and, where
+    the document number has six or more digits, those digits recovered from the surrogate with the
+    HMAC key alone (format-preserving encryption run backwards, no vault lookup).
+    """
+    if not vault_key:
+        raise ServiceError(403, "no vault key is configured on this server")
+    try:
+        vault = json.loads(Fernet(vault_key.encode()).decrypt(vault_bytes))
+    except Exception:
+        raise ServiceError(403, "this vault cannot be opened with this server's key "
+                                "(public runs use throwaway keys and are not reversible)") from None
+    hmac_key = base64.urlsafe_b64decode(hmac_key_b64) if hmac_key_b64 else None
+    out = []
+    for d in vault["documents"].values():
+        if d["output"] not in images:
+            continue
+        item = {"output_name": d["output"], "doc_type": d["doc_type"], "restored_png_b64": None, "note": None,
+                "fields": [{"type": f["type"], "surrogate": f["surrogate"], "original": f["value"]}
+                           for f in d["fields"] if f["surrogate"] and not f["type"].startswith("mrz_")],
+                "number_from_key": None}
+        number = next((f for f in d["fields"] if f["type"] == "doc_number" and f["surrogate"]), None)
+        digits = decrypt_digits(hmac_key, number["surrogate"], "doc_number") if hmac_key and number else None
+        if digits:                                   # letters in a number are substituted, digits encrypted
+            item["number_from_key"] = {"surrogate": "".join(c for c in number["surrogate"] if c.isdigit()),
+                                       "decrypted": digits}
+        try:
+            page = np.array(Image.open(io.BytesIO(images[d["output"]])).convert("RGB"))
+        except Exception:
+            item["note"] = "the image could not be read"
+        else:
+            if d.get("watermarked"):
+                item["note"] = "this page was released with a watermark, so its pixels cannot be restored exactly"
+            elif "restore" not in d or [page.shape[1], page.shape[0]] != d.get("size"):
+                item["note"] = "the image does not match the page recorded in the vault"
+            else:
+                try:
+                    item["restored_png_b64"] = _png_b64(restore_page(page, d["restore"]))
+                except ValueError as e:
+                    item["note"] = str(e)
+        out.append(item)
+    if not out:
+        raise ServiceError(400, "none of the images belong to this vault")
+    return out

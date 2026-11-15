@@ -31,7 +31,7 @@ from .stages.s3_locate import locate
 from .stages.s4_label import label
 from .stages.s7_render import render
 from .stages.s8_verify import corpus_leak_hunt, verify
-from .stages.s9_release import release
+from .stages.s9_release import original_patches, release
 
 log = logging.getLogger("kycpseudo")
 
@@ -68,6 +68,7 @@ def _stages_7_to_8(args):
     page, cfg = args
     out = render(page.image, page.rec, cfg)
     res = verify(page.image, out, page.rec, cfg)
+    page.rec.restore = original_patches(page.image, page.rec)
     return page.rec, out, res["page_text"]
 
 

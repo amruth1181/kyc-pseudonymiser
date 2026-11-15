@@ -76,6 +76,7 @@ class PageRecord:
     fields: list[Field] = field(default_factory=list)
     regions: list[Region] = field(default_factory=list)
     edits: list[dict] = field(default_factory=list)
+    restore: list[dict] = field(default_factory=list)   # original pixels of each edited area (vault only)
     verify: dict = field(default_factory=dict)
     status: str = "pending"          # pending, passed, review
     review_reasons: list[str] = field(default_factory=list)

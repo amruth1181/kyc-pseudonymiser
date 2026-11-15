@@ -8,22 +8,61 @@
 * ``audit.jsonl`` records what was changed (types, boxes, checks), never the
   original or surrogate values.
 * ``vault.enc`` holds everything needed to re-identify (originals, mapping,
-  input paths), encrypted with the vault key. Keep it, and the keys, apart
-  from the released corpus.
+  input paths) and to undo the edit (the original pixels of every changed
+  area), encrypted with the vault key. Keep it, and the keys, apart from the
+  released corpus.
+
+Pseudonymisation, unlike anonymisation, is reversible by the key holder:
+``restore_page`` puts the stored pixels back and returns the original page.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 from pathlib import Path
 
+import cv2
 import numpy as np
 from cryptography.fernet import Fernet
 from PIL import Image
 
 from ..config import Config
 from ..models import Entity, Identity, PageRecord
+
+
+def original_patches(original: np.ndarray, rec: PageRecord, pad: int = 2) -> list[dict]:
+    """The original pixels under every edit, as PNG, for the vault.
+
+    Verification guarantees that nothing changed outside the edit boxes (plus the same
+    2 px margin), so these patches are all that is needed to undo the page exactly.
+    """
+    h, w = original.shape[:2]
+    patches = []
+    for e in rec.edits:
+        if not e.get("ok") or "box" not in e:
+            continue
+        x0, y0, x1, y1 = e["box"]
+        x0, y0, x1, y1 = max(0, x0 - pad), max(0, y0 - pad), min(w, x1 + pad), min(h, y1 + pad)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        ok, png = cv2.imencode(".png", cv2.cvtColor(original[y0:y1, x0:x1], cv2.COLOR_RGB2BGR))
+        if ok:
+            patches.append({"box": [x0, y0, x1, y1], "png_b64": base64.b64encode(png.tobytes()).decode()})
+    return patches
+
+
+def restore_page(pseudonymised: np.ndarray, patches: list[dict]) -> np.ndarray:
+    """Undo a pseudonymised page with the patches from its vault entry."""
+    out = pseudonymised.copy()
+    for p in patches:
+        x0, y0, x1, y1 = p["box"]
+        patch = cv2.imdecode(np.frombuffer(base64.b64decode(p["png_b64"]), np.uint8), cv2.IMREAD_COLOR)
+        if patch is None or out[y0:y1, x0:x1].shape != patch.shape:
+            raise ValueError("this vault does not belong to this image")
+        out[y0:y1, x0:x1] = cv2.cvtColor(patch, cv2.COLOR_BGR2RGB)
+    return out
 
 
 def output_name(rec: PageRecord, cfg: Config) -> str:
@@ -70,7 +109,7 @@ def release(out_dir: Path, records: list[PageRecord], outputs: dict[str, np.ndar
         "identities": {k: v.__dict__ for k, v in idents.items()},
         "documents": {
             rec.doc_id: {"input": rec.path, "output": names[rec.doc_id], "doc_type": rec.doc_type,
-                         "status": rec.status,
+                         "status": rec.status, "size": [rec.width, rec.height], "restore": rec.restore,
                          "fields": [{"type": f.ftype, "value": f.value, "surrogate": f.surrogate,
                                      "entity": f.entity_id, "mention": f.mention_id, "source": f.source}
                                     for f in rec.fields]}
