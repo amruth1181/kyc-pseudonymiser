@@ -87,6 +87,47 @@ def pseudonymise(files: list[tuple[str, bytes]], operator: bool, custom_name=Non
                                max_files=MAX_FILES, max_bytes=MAX_FILE_MB * 1024 * 1024)
 
 
+def reverse(vault: bytes, images: dict[str, bytes]) -> dict:
+    """Undo a run: needs the vault, the pseudonymised pages and the server's keys."""
+    items = service.restore(vault, images, vault_key=setting("KYCPSEUDO_VAULT_KEY") or None,
+                            hmac_key_b64=setting("KYCPSEUDO_HMAC_KEY") or None)
+    return {"items": items, "images": images}
+
+
+def read_bundle(data: bytes) -> tuple[bytes, dict[str, bytes]]:
+    """Vault and pages from a downloaded outputs .zip; sizes are checked before anything is unpacked."""
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise service.ServiceError(400, "that file is not a .zip archive") from None
+    members = [m for m in z.infolist() if not m.is_dir()]
+    if len(members) > MAX_FILES + 1 or any(m.file_size > 40 * 1024 * 1024 for m in members):
+        raise service.ServiceError(413, "the archive holds too many or too large files")
+    vault = next((z.read(m) for m in members if Path(m.filename).name == "vault.enc"), None)
+    if vault is None:
+        raise service.ServiceError(400, "no vault.enc in the archive: only runs made with the access token can be reversed")
+    return vault, {Path(m.filename).name: z.read(m) for m in members if m.filename.lower().endswith(".png")}
+
+
+def show_restored(restored: dict) -> None:
+    for item in restored["items"]:
+        with st.expander(f"↩️ {item['output_name']} ({item['doc_type'].replace('_', ' ')})", expanded=True):
+            left, right = st.columns(2)
+            left.image(restored["images"][item["output_name"]], caption="Pseudonymised", width="stretch")
+            if item["restored_png_b64"]:
+                right.image(base64.b64decode(item["restored_png_b64"]), caption="Restored original", width="stretch")
+            else:
+                right.warning("Page not restored: " + (item["note"] or "unknown reason"))
+            rows = [{"Field": FIELD_LABELS.get(f["type"], f["type"]), "Pseudonym": f["surrogate"],
+                     "Original": f["original"]} for f in item["fields"]]
+            if rows:
+                st.dataframe(rows, width="stretch", hide_index=True)
+            n = item["number_from_key"]
+            if n:
+                st.caption(f"Digits of the document number recovered with the key alone, without the vault "
+                           f"(format-preserving encryption run backwards): {n['surrogate']} → {n['decrypted']}")
+
+
 FIELD_LABELS = {
     "surname": "Surname", "given_names": "Given names", "full_name": "Name", "third_party_name": "Name in text",
     "doc_number": "Document number", "dob": "Date of birth", "place_of_birth": "Place of birth",
@@ -138,7 +179,7 @@ with st.expander("How it works"):
     )
 
 # ------------------------------------------------------------------ input
-tab_upload, tab_samples = st.tabs(["Upload", "Synthetic samples"])
+tab_upload, tab_samples, tab_reverse = st.tabs(["Upload", "Synthetic samples", "Reverse"])
 files: list[tuple[str, bytes]] = []
 with tab_samples:
     st.caption("Fictional people from the fictional state of Utopia. Pick documents belonging to the same "
@@ -161,6 +202,23 @@ with tab_upload:
     if st.button("Pseudonymise uploads", type="primary", disabled=not uploads):
         files = [(u.name, u.getvalue()) for u in uploads]
 
+with tab_reverse:
+    st.caption("Pseudonymisation can be undone by whoever holds the key, and by nobody else. Upload the "
+               ".zip you downloaded from a run made with the access token: it holds the pseudonymised "
+               "pages and the encrypted vault.")
+    bundle = st.file_uploader("Outputs (.zip with the pages and vault.enc)", type=["zip"])
+    if not operator:
+        st.info("Enter the access token in the sidebar to reverse a run. Results made without the token "
+                "use throwaway keys and cannot be reversed by anyone; that is by design.")
+    if st.button("Restore originals", type="primary", disabled=not (bundle and operator)):
+        try:
+            st.session_state["restored"] = reverse(*read_bundle(bundle.getvalue()))
+            st.session_state["restored_from"] = "bundle"
+        except service.ServiceError as e:
+            st.error(str(e))
+    if st.session_state.get("restored") and st.session_state.get("restored_from") != "results":
+        show_restored(st.session_state["restored"])
+
 # ------------------------------------------------------------------ run
 if files:
     with st.spinner(f"Processing {len(files)} document(s). This takes about 5-10 seconds per page."):
@@ -169,6 +227,7 @@ if files:
                 raise service.ServiceError(429, f"Limit of {PUBLIC_PER_HOUR} runs per hour reached. Try again later.")
             chosen_name = service.parse_custom_name(custom_surname, custom_given)
             st.session_state["result"] = pseudonymise(files, operator, chosen_name, keep_photo=not replace_photo)
+            st.session_state.pop("restored", None)
             st.session_state["inputs"] = dict(files)
         except service.ServiceError as e:
             st.error(str(e))
@@ -196,6 +255,18 @@ if res:
         if res.get("vault_b64"):
             z.writestr("vault.enc", base64.b64decode(res["vault_b64"]))
     st.download_button("Download all outputs (.zip)", archive.getvalue(), "kycpseudo_outputs.zip", "application/zip")
+    if res.get("vault_b64"):
+        if st.button("Reverse: restore the originals from these outputs", help="Uses only the pseudonymised "
+                     "pages, the encrypted vault and the server's key. The files you uploaded are not consulted."):
+            try:
+                st.session_state["restored"] = reverse(
+                    base64.b64decode(res["vault_b64"]),
+                    {d["output_name"]: base64.b64decode(d["image_png_b64"]) for d in res["documents"]})
+                st.session_state["restored_from"] = "results"
+            except service.ServiceError as e:
+                st.error(str(e))
+        if st.session_state.get("restored") and st.session_state.get("restored_from") == "results":
+            show_restored(st.session_state["restored"])
 
     for d in res["documents"]:
         ok = d["status"] == "passed"

@@ -19,6 +19,8 @@ The Streamlit app runs the pipeline itself, so one free deployment is all it nee
 
 **Keeping the photo.** Unticking *Replace the passport photo* leaves the original face on the page. Such a page is always watermarked, with or without the token, because a real face next to a new identity is what a forged document looks like. The same applies to a passport whose photo could not be replaced when a chosen name is on it.
 
+**Reversing a run.** A run made with the token can be undone, which is what separates pseudonymised from anonymised data. The vault holds the original values and the original pixels of every changed area, encrypted with `KYCPSEUDO_VAULT_KEY`. The *Reverse* button under the results, or the *Reverse* tab with a downloaded outputs .zip, rebuilds the original pages from the pseudonymised images and the vault alone, and shows the pseudonym to original mapping. It also recovers the document number's digits from the pseudonym with the HMAC key alone (FF1 decryption). Public runs use throwaway keys and return no vault, so nobody can reverse them. A page released with a watermark cannot be restored pixel for pixel; its mapping still is.
+
 Public runs are limited to 20 per hour per browser session, and only one run executes at a time across all visitors. Uploads are processed in a temporary directory that is deleted before the result is shown; nothing is stored. Uploaded filenames are never reused, because scan filenames often contain the customer's name.
 
 ## Deploy
